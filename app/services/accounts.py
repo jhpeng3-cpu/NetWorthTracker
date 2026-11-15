@@ -13,13 +13,16 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     CATEGORY_LABELS,
     CATEGORIES_BY_SIDE,
+    CURRENCY_CODES,
+    CURRENCY_LABELS,
     SIDE_LABELS,
     Account,
     ValuationSnapshot,
 )
+from app.utils.exceptions import AppValidationError
 
 
-class AccountValidationError(ValueError):
+class AccountValidationError(AppValidationError):
     pass
 
 
@@ -57,6 +60,10 @@ class AccountOverview:
         suffix = "（已归档）" if self.archived else ""
         return f"{self.name}（{self.side_label}·{self.category_label}）{suffix}"
 
+    @property
+    def currency_label(self) -> str:
+        return CURRENCY_LABELS.get(self.currency, self.currency)
+
 
 def _clean_fields(
     name: str,
@@ -75,8 +82,11 @@ def _clean_fields(
     if category not in CATEGORIES_BY_SIDE[side]:
         raise AccountValidationError("账户类别与资产/负债方向不匹配。")
     clean_currency = (currency or "CNY").strip().upper() or "CNY"
-    if len(clean_currency) > 10:
-        raise AccountValidationError("币种代码不能超过 10 个字符。")
+    if clean_currency not in CURRENCY_CODES:
+        allowed = "、".join(
+            f"{CURRENCY_LABELS[code]}（{code}）" for code in CURRENCY_CODES
+        )
+        raise AccountValidationError(f"币种仅支持：{allowed}。")
     return clean_name, side, category, clean_currency, (note or "").strip() or None
 
 

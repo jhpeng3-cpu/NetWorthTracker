@@ -143,7 +143,7 @@ class AccountsPage(BasePage):
             values = [
                 overview.name,
                 overview.category_label,
-                overview.currency,
+                overview.currency_label,
                 fmt_money(overview.latest_value, self.symbol),
                 overview.latest_date.strftime("%Y-%m-%d") if overview.latest_date else "—",
                 overview.note,

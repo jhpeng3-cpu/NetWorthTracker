@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 from app.db.models import (
     CATEGORY_LABELS,
     CATEGORIES_BY_SIDE,
+    CURRENCY_CODES,
+    CURRENCY_LABELS,
     SIDE_ASSET,
     SIDE_LIABILITY,
     SIDE_LABELS,
@@ -58,8 +60,8 @@ class AccountDialog(QDialog):
         self.category_combo = QComboBox()
         self.side_combo.currentIndexChanged.connect(self._populate_categories)
         self.currency_combo = QComboBox()
-        self.currency_combo.setEditable(True)
-        self.currency_combo.addItems(["CNY", "USD", "HKD", "EUR", "JPY"])
+        for code in CURRENCY_CODES:
+            self.currency_combo.addItem(f"{CURRENCY_LABELS[code]}（{code}）", code)
         self.note_edit = QTextEdit()
         self.note_edit.setPlaceholderText("可选备注")
         self.note_edit.setFixedHeight(72)
@@ -110,7 +112,8 @@ class AccountDialog(QDialog):
         category_index = self.category_combo.findData(account.category)
         if category_index >= 0:
             self.category_combo.setCurrentIndex(category_index)
-        self.currency_combo.setCurrentText(account.currency)
+        currency_index = self.currency_combo.findData(account.currency)
+        self.currency_combo.setCurrentIndex(currency_index if currency_index >= 0 else 0)
         self.note_edit.setPlainText(account.note)
 
     def _submit(self) -> None:
@@ -123,7 +126,7 @@ class AccountDialog(QDialog):
             "name": name,
             "side": self.side_combo.currentData(),
             "category": self.category_combo.currentData(),
-            "currency": self.currency_combo.currentText().strip().upper(),
+            "currency": self.currency_combo.currentData() or "CNY",
             "note": self.note_edit.toPlainText().strip(),
         }
         try:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -21,9 +21,12 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.db.engine import db
+from app.db.models import CURRENCY_CODES, CURRENCY_LABELS
+from app.services import exchange_rates
 from app.ui.common import primary_button, show_info, show_warning
 from app.ui.pages.base import BasePage
 from app.ui.styles import palette
+from app.utils.async_task import run_async
 
 
 class SettingsPage(BasePage):
@@ -76,6 +79,31 @@ class SettingsPage(BasePage):
         backup_form.addRow("", backup_hint)
         self.root.addWidget(backup_group)
 
+        rate_group = QGroupBox("汇率（兑人民币）")
+        rate_layout = QVBoxLayout(rate_group)
+        rate_layout.setContentsMargins(12, 14, 12, 10)
+        rate_layout.setSpacing(8)
+        self.rate_form = QFormLayout()
+        self.rate_form.setSpacing(7)
+        self.rate_labels: Dict[str, QLabel] = {}
+        for code in CURRENCY_CODES:
+            if code == "CNY":
+                continue
+            label = QLabel("—")
+            self.rate_labels[code] = label
+            self.rate_form.addRow(f"{CURRENCY_LABELS[code]}（{code}）", label)
+        rate_layout.addLayout(self.rate_form)
+        rate_row = QHBoxLayout()
+        self.rate_hint = QLabel("启动后与每天 00:00 自动拉取；也可手动刷新。")
+        self.rate_hint.setObjectName("Hint")
+        self.rate_hint.setWordWrap(True)
+        rate_row.addWidget(self.rate_hint, 1)
+        refresh_rate_button = QPushButton("立即刷新汇率")
+        refresh_rate_button.clicked.connect(self._refresh_rates)
+        rate_row.addWidget(refresh_rate_button)
+        rate_layout.addLayout(rate_row)
+        self.root.addWidget(rate_group)
+
         database_group = QGroupBox("数据库连接")
         database_layout = QVBoxLayout(database_group)
         database_layout.setContentsMargins(12, 14, 12, 10)
@@ -124,6 +152,7 @@ class SettingsPage(BasePage):
 
     def refresh(self) -> None:
         self.refresh_db_info()
+        self.refresh_rate_labels()
 
     def refresh_db_info(self) -> None:
         settings = self.config.db_settings()
@@ -142,6 +171,56 @@ class SettingsPage(BasePage):
             self.db_status_label.setStyleSheet(
                 f"color: {palette(self.config.theme)['danger']};"
             )
+
+    def refresh_rate_labels(self) -> None:
+        if not db.is_configured:
+            return
+
+        def task():
+            with db.session_scope() as session:
+                return exchange_rates.latest_rates(session)
+
+        def success(result):
+            if not isinstance(result, dict):
+                return
+            latest_day = None
+            for code, label in self.rate_labels.items():
+                entry = result.get(code)
+                if entry is None:
+                    label.setText("暂无数据")
+                else:
+                    day, rate = entry
+                    if latest_day is None or day > latest_day:
+                        latest_day = day
+                    label.setText(f"1 {code} = {rate:.4f} CNY（{day:%Y-%m-%d}）")
+            if latest_day is not None:
+                self.rate_hint.setText(
+                    f"最近更新：{latest_day:%Y-%m-%d}；启动后与每天 00:00 自动拉取。"
+                )
+
+        def failure(_message: str):
+            self.rate_hint.setText("汇率加载失败，请检查数据库连接。")
+
+        run_async(task, success, failure)
+
+    def _refresh_rates(self) -> None:
+        if not db.is_configured:
+            return
+        self.rate_hint.setText("正在获取汇率…")
+
+        def task():
+            with db.session_scope() as session:
+                return exchange_rates.refresh_rates(session)
+
+        def success(result):
+            self.rate_hint.setText("汇率已更新。")
+            self.refresh_rate_labels()
+            self.data_changed.emit()
+
+        def failure(_message: str):
+            self.rate_hint.setText("获取失败：所有汇率源均不可用，请检查网络后重试。")
+
+        run_async(task, success, failure)
 
     def _browse_backup_dir(self) -> None:
         start = self.backup_dir_edit.text().strip() or str(Path.home())

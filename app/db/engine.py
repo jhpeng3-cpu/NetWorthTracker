@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import DbSettings
+from app.utils.exceptions import AppRuntimeError
 
 DRIVER_NAME = "mysql+pymysql"
 CHARSET = "utf8mb4"
@@ -19,7 +20,7 @@ COLLATION = "utf8mb4_unicode_ci"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_$]+$")
 
 
-class DatabaseConnectionError(RuntimeError):
+class DatabaseConnectionError(AppRuntimeError):
     """连接数据库失败，message 为面向用户的中文提示。"""
 
 

@@ -6,6 +6,8 @@ from typing import Callable, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
+from app.utils.exceptions import friendly_message
+
 logger = logging.getLogger(__name__)
 
 # PySide6 中 QThreadPool 不会持有 Python QRunnable 的强引用，
@@ -30,7 +32,7 @@ class Worker(QRunnable):
             result = self._fn()
         except Exception as exc:  # noqa: BLE001 - 需要把错误送回 UI 线程
             logger.exception("后台任务失败")
-            self.signals.failed.emit(str(exc))
+            self.signals.failed.emit(friendly_message(exc))
         else:
             self.signals.finished.emit(result)
 

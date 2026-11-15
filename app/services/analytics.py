@@ -1,5 +1,8 @@
 """净资产、资产分布、历史曲线与变化拆解。
 
+金额口径：所有对外统计均折算为人民币；各持仓按「统计当日」的有效汇率换算
+（当日无汇率时前向填充最近一次，早于最早汇率日沿用最早汇率，见 exchange_rates）。
+
 前向填充核心：
 - holdings_as_of() 使用窗口函数 row_number() OVER (PARTITION BY account_id
   ORDER BY snapshot_date DESC) 取每个账户在目标日期及之前最近的一条估值。
@@ -10,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,6 +26,7 @@ from app.db.models import (
     Account,
     ValuationSnapshot,
 )
+from app.services import exchange_rates
 from app.utils.dates import build_period_points
 from app.utils.money import ratio
 
@@ -35,6 +39,7 @@ class Holding:
     category: str
     value: Optional[Decimal]
     snapshot_date: Optional[date]
+    currency: str = "CNY"
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,7 @@ def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
             Account.name,
             Account.side,
             Account.category,
+            Account.currency,
             ranked.c.value,
             ranked.c.snapshot_date,
         )
@@ -131,6 +137,7 @@ def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
             account_name=row.name,
             side=row.side,
             category=row.category,
+            currency=row.currency,
             value=row.value,
             snapshot_date=row.snapshot_date,
         )
@@ -138,18 +145,24 @@ def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
     ]
 
 
-def _sum_side(holdings: List[Holding], side: str) -> Decimal:
+def _sum_side(
+    holdings: List[Holding],
+    side: str,
+    lookup: Callable[[str, date], Decimal],
+    on_date: date,
+) -> Decimal:
     total = Decimal("0.00")
     for item in holdings:
-        if item.side == side and item.value is not None:
-            total += item.value
+        if item.side == side:
+            total += exchange_rates.to_cny(item.value, item.currency, on_date, lookup)
     return total
 
 
 def net_worth_on(session: Session, on_date: date) -> NetWorthPoint:
     holdings = holdings_as_of(session, on_date)
-    assets = _sum_side(holdings, SIDE_ASSET)
-    liabilities = _sum_side(holdings, SIDE_LIABILITY)
+    lookup = exchange_rates.build_rate_lookup(session)
+    assets = _sum_side(holdings, SIDE_ASSET, lookup, on_date)
+    liabilities = _sum_side(holdings, SIDE_LIABILITY, lookup, on_date)
     return NetWorthPoint(
         on_date=on_date,
         assets=assets,
@@ -238,6 +251,7 @@ def distribution(
 ) -> List[PieSlice]:
     day = on_date or date.today()
     holdings = holdings_as_of(session, day)
+    lookup = exchange_rates.build_rate_lookup(session)
     buckets: Dict[str, Decimal] = {}
     for item in holdings:
         if item.side != side or item.value is None or item.value <= 0:
@@ -246,7 +260,9 @@ def distribution(
             key = item.account_name
         else:
             key = CATEGORY_LABELS.get(item.category, item.category)
-        buckets[key] = buckets.get(key, Decimal("0.00")) + item.value
+        buckets[key] = buckets.get(key, Decimal("0.00")) + exchange_rates.to_cny(
+            item.value, item.currency, day, lookup
+        )
     total = sum(buckets.values(), Decimal("0.00"))
     if total <= 0:
         return []
@@ -272,13 +288,14 @@ def history_points(
     if start > end:
         return []
 
-    rows: List[Tuple[date, int, str, Decimal]] = [
-        (row.snapshot_date, row.account_id, row.side, row.value)
+    rows: List[Tuple[date, int, str, str, Decimal]] = [
+        (row.snapshot_date, row.account_id, row.side, row.currency, row.value)
         for row in session.execute(
             select(
                 ValuationSnapshot.snapshot_date,
                 ValuationSnapshot.account_id,
                 Account.side,
+                Account.currency,
                 ValuationSnapshot.value,
             )
             .join(Account, Account.id == ValuationSnapshot.account_id)
@@ -298,21 +315,23 @@ def history_points(
     else:
         target_dates = build_period_points(start, end, granularity)
 
-    current: Dict[int, Tuple[str, Decimal]] = {}
+    lookup = exchange_rates.build_rate_lookup(session)
+    current: Dict[int, Tuple[str, str, Decimal]] = {}
     cursor = 0
     result: List[NetWorthPoint] = []
     for target in target_dates:
         while cursor < len(rows) and rows[cursor][0] <= target:
-            _, account_id, side, value = rows[cursor]
-            current[account_id] = (side, value)
+            _, account_id, side, currency, value = rows[cursor]
+            current[account_id] = (side, currency, value)
             cursor += 1
         assets = Decimal("0.00")
         liabilities = Decimal("0.00")
-        for side, value in current.values():
+        for side, currency, value in current.values():
+            converted = exchange_rates.to_cny(value, currency, target, lookup)
             if side == SIDE_ASSET:
-                assets += value
+                assets += converted
             else:
-                liabilities += value
+                liabilities += converted
         result.append(
             NetWorthPoint(
                 on_date=target,
@@ -329,6 +348,7 @@ def decompose(session: Session, start: date, end: date) -> Decomposition:
     end_point = net_worth_on(session, end)
     start_holdings = {item.account_id: item for item in holdings_as_of(session, start)}
     end_holdings = {item.account_id: item for item in holdings_as_of(session, end)}
+    lookup = exchange_rates.build_rate_lookup(session)
 
     rows: List[DecompositionRow] = []
     for account_id in set(start_holdings) | set(end_holdings):
@@ -337,8 +357,12 @@ def decompose(session: Session, start: date, end: date) -> Decomposition:
         meta = last or first
         if meta is None:
             continue
-        start_value = first.value if first and first.value is not None else Decimal("0.00")
-        end_value = last.value if last and last.value is not None else Decimal("0.00")
+        start_value = exchange_rates.to_cny(
+            first.value if first else None, meta.currency, start, lookup
+        )
+        end_value = exchange_rates.to_cny(
+            last.value if last else None, meta.currency, end, lookup
+        )
         rows.append(
             DecompositionRow(
                 account_id=account_id,

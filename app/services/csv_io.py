@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Account, CATEGORY_LABELS, SIDE_LABELS, ValuationSnapshot
 from app.services import accounts as account_service
 from app.services import snapshots as snapshot_service
+from app.utils.exceptions import AppRuntimeError
 from app.utils.money import AmountError, parse_amount
 
 IMPORT_REQUIRED_HEADERS = ("account_name", "snapshot_date", "value")
@@ -24,7 +25,7 @@ DUPLICATE_SKIP = "skip"
 DUPLICATE_OVERWRITE = "overwrite"
 
 
-class CsvError(RuntimeError):
+class CsvError(AppRuntimeError):
     pass
 
 

@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import DbSettings
+from app.utils.exceptions import AppRuntimeError
 
 
-class BackupError(RuntimeError):
+class BackupError(AppRuntimeError):
     pass
 
 

@@ -12,6 +12,7 @@ from app import __version__
 from app.config import AppConfig, app_dir
 from app.db.engine import db
 from app.db.migrate import run_migrations
+from app.utils.exceptions import install_global_exception_handler
 from app.ui.dialogs.db_config_dialog import DbConfigDialog
 from app.ui.main_window import MainWindow
 from app.ui.styles import build_stylesheet
@@ -43,6 +44,7 @@ def setup_logging() -> None:
 
 def main() -> int:
     setup_logging()
+    install_global_exception_handler()
     app = QApplication(sys.argv)
     app.setApplicationName("净资产管理")
     app.setOrganizationName("NetWorthTracker")

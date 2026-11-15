@@ -10,14 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import Account, CATEGORY_LABELS, SIDE_LABELS, ValuationSnapshot
+from app.utils.exceptions import AppError, AppValidationError
 from app.utils.money import fmt_money, parse_amount
 
 
-class SnapshotValidationError(ValueError):
+class SnapshotValidationError(AppValidationError):
     pass
 
 
-class SnapshotExistsError(Exception):
+class SnapshotExistsError(AppError):
     def __init__(self, snapshot_date: date, value: Decimal):
         self.snapshot_date = snapshot_date
         self.value = value
@@ -27,11 +28,11 @@ class SnapshotExistsError(Exception):
         )
 
 
-class SnapshotNotFound(LookupError):
+class SnapshotNotFound(AppError, LookupError):
     pass
 
 
-class BatchConflictError(Exception):
+class BatchConflictError(AppError):
     def __init__(self, names: Sequence[str]):
         self.names = list(names)
         preview = "、".join(self.names[:5])

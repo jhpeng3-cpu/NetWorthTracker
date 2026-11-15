@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import QSize, QTimer, Qt
+from PySide6.QtCore import QDateTime, QTime, QSize, QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.config import AppConfig
 from app.db.engine import db
-from app.services import backup
+from app.services import backup, exchange_rates
 from app.ui.common import show_error, show_info
 from app.ui.dialogs.db_config_dialog import DbConfigDialog
 from app.ui.pages.accounts import AccountsPage
@@ -48,6 +48,8 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._apply_theme(self.config.theme)
         QTimer.singleShot(1500, self._auto_backup_if_needed)
+        QTimer.singleShot(2500, self._startup_rate_refresh)
+        self._schedule_midnight_rate_fetch()
 
     # ---- 构建 ----
     def _build_menu(self) -> None:
@@ -197,6 +199,7 @@ class MainWindow(QMainWindow):
             self.refresh_all()
             self.settings_page.reload_from_config()
             self._update_db_status()
+            self._refresh_rates()
             self.statusBar().showMessage("数据库连接已更新", 4000)
 
     def _show_about(self) -> None:
@@ -237,6 +240,46 @@ class MainWindow(QMainWindow):
             run_async(task, success, failure)
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(f"自动备份失败：{exc}", 8000)
+
+    # ---- 汇率 ----
+    def _startup_rate_refresh(self) -> None:
+        if db.is_configured:
+            self._refresh_rates()
+
+    def _schedule_midnight_rate_fetch(self) -> None:
+        now = QDateTime.currentDateTime()
+        next_midnight = QDateTime(now.date().addDays(1), QTime(0, 0))
+        delay = max(60000, now.msecsTo(next_midnight) + 5000)
+        QTimer.singleShot(delay, self._on_midnight_rate_fetch)
+
+    def _on_midnight_rate_fetch(self) -> None:
+        if db.is_configured:
+            self._refresh_rates()
+        self._schedule_midnight_rate_fetch()
+
+    def _refresh_rates(self) -> None:
+        self.statusBar().showMessage("正在获取最新汇率…")
+
+        def task():
+            with db.session_scope() as session:
+                return exchange_rates.refresh_rates(session)
+
+        def success(result):
+            day, count = result
+            self.statusBar().showMessage(
+                f"汇率已更新：{count} 个币种（{day:%Y-%m-%d}）", 8000
+            )
+            self._on_data_changed()
+
+        def failure(_message: str):
+            self.statusBar().showMessage(
+                "汇率获取失败，沿用最近一次成功汇率；可在「设置」页手动重试", 8000
+            )
+
+        try:
+            run_async(task, success, failure)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"汇率获取失败：{exc}", 8000)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         db.dispose()

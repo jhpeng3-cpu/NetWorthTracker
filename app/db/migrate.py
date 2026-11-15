@@ -9,9 +9,10 @@ from alembic.config import Config
 from sqlalchemy.engine import URL
 
 from app.config import bundle_dir
+from app.utils.exceptions import AppRuntimeError
 
 
-class MigrationError(RuntimeError):
+class MigrationError(AppRuntimeError):
     pass
 
 

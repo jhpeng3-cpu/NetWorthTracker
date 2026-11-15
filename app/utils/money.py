@@ -6,11 +6,13 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from app.utils.exceptions import AppValidationError
+
 CENT = Decimal("0.01")
 MAX_AMOUNT = Decimal("9999999999999999.99")  # NUMERIC(18,2) 上限
 
 
-class AmountError(ValueError):
+class AmountError(AppValidationError):
     """金额格式或范围不合法。"""
 
 
