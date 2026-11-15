@@ -263,16 +263,30 @@ def distribution(
     holdings = holdings_as_of(session, day)
     lookup = exchange_rates.build_rate_lookup(session)
     buckets: Dict[str, Decimal] = {}
-    for item in holdings:
-        if item.side != side or item.value is None or item.value <= 0:
-            continue
-        if group_by == "account":
-            key = item.account_name
-        else:
-            key = CATEGORY_LABELS.get(item.category, item.category)
-        buckets[key] = buckets.get(key, Decimal("0.00")) + exchange_rates.to_cny(
-            item.value, item.currency, day, lookup
-        )
+    if group_by == "account":
+        for item in holdings:
+            if item.side != side or item.value is None or item.value <= 0:
+                continue
+            buckets[item.account_name] = buckets.get(
+                item.account_name, Decimal("0.00")
+            ) + exchange_rates.to_cny(item.value, item.currency, day, lookup)
+    else:
+        # 按类别统计时，类别内存在多种币种则按币种拆分；单币种类别保持原名称。
+        by_category_currency: Dict[Tuple[str, str], Decimal] = {}
+        for item in holdings:
+            if item.side != side or item.value is None or item.value <= 0:
+                continue
+            label = CATEGORY_LABELS.get(item.category, item.category)
+            key = (label, item.currency)
+            by_category_currency[key] = by_category_currency.get(
+                key, Decimal("0.00")
+            ) + exchange_rates.to_cny(item.value, item.currency, day, lookup)
+        currencies: Dict[str, set] = {}
+        for label, currency in by_category_currency:
+            currencies.setdefault(label, set()).add(currency)
+        for (label, currency), value in by_category_currency.items():
+            name = f"{label} · {currency}" if len(currencies[label]) > 1 else label
+            buckets[name] = buckets.get(name, Decimal("0.00")) + value
     total = sum(buckets.values(), Decimal("0.00"))
     if total <= 0:
         return []

@@ -80,6 +80,7 @@ class ItemDialog(QDialog):
         self.symbol_edit = QLineEdit()
         self.symbol_edit.setText(symbol)
         self.symbol_edit.setPlaceholderText("可选，如 600519 / 00700 / AAPL")
+        self.symbol_label = QLabel("股票代码")
 
         if not lots_only:
             form = QFormLayout()
@@ -91,7 +92,11 @@ class ItemDialog(QDialog):
             form.addRow("币种 *", self.currency_combo)
             form.addRow("类别 *", self.category_combo)
             if side == "asset":
-                form.addRow("股票代码", self.symbol_edit)
+                form.addRow(self.symbol_label, self.symbol_edit)
+                self.category_combo.currentIndexChanged.connect(
+                    self._update_symbol_visibility
+                )
+                self._update_symbol_visibility()
             layout.addLayout(form)
 
         if allow_lots:
@@ -261,7 +266,14 @@ class ItemDialog(QDialog):
         return self.currency_combo.currentData()
 
     def symbol_value(self) -> str:
+        if self.category_combo.currentData() != "stock":
+            return ""
         return self.symbol_edit.text().strip().upper()
+
+    def _update_symbol_visibility(self) -> None:
+        visible = self.category_combo.currentData() == "stock"
+        self.symbol_label.setVisible(visible)
+        self.symbol_edit.setVisible(visible)
 
     # ---- 提交 ----
 
@@ -269,7 +281,7 @@ class ItemDialog(QDialog):
         return (
             self.name_edit.text().strip(),
             self.category_combo.currentData(),
-            self.symbol_edit.text().strip().upper(),
+            self.symbol_value(),
         )
 
     def _submit(self) -> None:

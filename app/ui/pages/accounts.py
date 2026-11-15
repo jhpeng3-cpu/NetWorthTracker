@@ -61,7 +61,7 @@ from app.utils.money import fmt_money, fmt_percent, symbol_for
 
 class AccountsPage(BasePage):
     ACCOUNT_HEADERS = ["名称", "估值(CNY)", "状态"]
-    ITEM_HEADERS = ["子项", "类别", "现价", "最新估值", "折合人民币", "盈亏额", "盈亏率", "估值日期"]
+    ITEM_HEADERS = ["子项", "类别", "现价", "最新估值", "折合人民币", "盈亏额", "盈亏率"]
 
     def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(config, parent)
@@ -94,15 +94,11 @@ class AccountsPage(BasePage):
         self.delete_button.clicked.connect(self._delete_account)
         self.show_archived = QCheckBox("显示已归档")
         self.show_archived.stateChanged.connect(self.refresh)
-        self.quote_button = QPushButton("刷新行情")
-        self.quote_button.setToolTip("拉取已配置代码的子项最新价，并写入当日估值")
-        self.quote_button.clicked.connect(self._refresh_quotes)
         toolbar.addWidget(self.new_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.archive_button)
         toolbar.addWidget(self.delete_button)
         toolbar.addWidget(self.show_archived)
-        toolbar.addWidget(self.quote_button)
         toolbar.addStretch(1)
         self.rate_strip = QWidget()
         self.rate_strip_layout = QHBoxLayout(self.rate_strip)
@@ -209,8 +205,8 @@ class AccountsPage(BasePage):
         right_layout.addLayout(entry_row)
 
         self.items_table = make_table(self.ITEM_HEADERS)
-        set_columns(self.items_table, [110, 62, 82, 98, 100, 92, 62, 84])
-        align_headers(self.items_table, (2, 3, 4, 5, 6, 7))
+        set_columns(self.items_table, [110, 62, 82, 98, 100, 92, 62])
+        align_headers(self.items_table, (2, 3, 4, 5, 6))
         self.items_table.doubleClicked.connect(self._on_item_double_clicked)
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.itemSelectionChanged.connect(self._update_buttons)
@@ -338,57 +334,44 @@ class AccountsPage(BasePage):
         self._append_rate_button()
 
     def _append_rate_button(self) -> None:
-        self.refresh_rates_button = QPushButton("刷新汇率")
-        self.refresh_rates_button.setToolTip("立即拉取账户所用币种兑人民币的最新汇率")
-        self.refresh_rates_button.clicked.connect(self._refresh_rates)
+        self.refresh_rates_button = QPushButton("刷新")
+        self.refresh_rates_button.setToolTip(
+            "立即刷新汇率，并拉取已配置股票代码的最新行情、写入当日估值"
+        )
+        self.refresh_rates_button.clicked.connect(self._refresh_all)
         self.rate_strip_layout.addWidget(self.refresh_rates_button)
 
-    def _refresh_rates(self) -> None:
+    def _refresh_all(self) -> None:
         if not db.is_configured:
             return
         self.refresh_rates_button.setEnabled(False)
         self.refresh_rates_button.setText("刷新中…")
 
         def task():
+            rate_error = ""
             with db.session_scope() as session:
-                return exchange_rates.refresh_rates(session)
+                try:
+                    exchange_rates.refresh_rates(session)
+                except Exception as exc:  # noqa: BLE001 - 汇率失败仍继续拉行情
+                    rate_error = str(exc)
+                result = quotes.refresh_stock_quotes(session)
+            return rate_error, result
 
-        def success(_result):
-            self.refresh()
-            self.data_changed.emit()
+        def success(payload):
+            rate_error, result = payload
+            self._after_change()
+            problems = []
+            if rate_error:
+                problems.append(f"汇率：{rate_error}")
+            if result.failed:
+                problems.append("\n".join(result.errors[:6]))
+            if problems:
+                show_warning(self, "部分数据刷新失败", "\n".join(problems))
 
         def failure(message: str):
             self.refresh_rates_button.setEnabled(True)
-            self.refresh_rates_button.setText("刷新汇率")
-            show_warning(self, "汇率刷新失败", message)
-
-        run_async(task, success, failure)
-
-    def _refresh_quotes(self) -> None:
-        if not db.is_configured:
-            return
-        self.quote_button.setEnabled(False)
-        self.quote_button.setText("刷新中…")
-
-        def task():
-            with db.session_scope() as session:
-                return quotes.refresh_stock_quotes(session)
-
-        def success(result):
-            self.quote_button.setEnabled(True)
-            self.quote_button.setText("刷新行情")
-            self._after_change()
-            if result.failed:
-                show_warning(
-                    self,
-                    "部分行情获取失败",
-                    "\n".join(result.errors[:6]),
-                )
-
-        def failure(message: str):
-            self.quote_button.setEnabled(True)
-            self.quote_button.setText("刷新行情")
-            show_warning(self, "行情刷新失败", message)
+            self.refresh_rates_button.setText("刷新")
+            show_warning(self, "刷新失败", message)
 
         run_async(task, success, failure)
 
@@ -583,17 +566,16 @@ class AccountsPage(BasePage):
                 cny_text,
                 pnl_text,
                 rate_text,
-                item.latest_date.strftime("%Y-%m-%d") if item.latest_date else "—",
             ]
             for column, text in enumerate(values):
                 cell = table_item(
                     text,
-                    align_right=column in (2, 3, 4, 5, 6, 7),
+                    align_right=column in (2, 3, 4, 5, 6),
                     user_data=item.id if column == 0 else None,
                 )
                 if column == 2 and item.symbol:
                     if item.price is None:
-                        cell.setToolTip(f"{item.symbol} · 暂无行情，点击「刷新行情」")
+                        cell.setToolTip(f"{item.symbol} · 暂无行情，点击「刷新」")
                     else:
                         tail = (
                             item.price_at.strftime("%m-%d %H:%M")
