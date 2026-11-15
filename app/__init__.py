@@ -1,0 +1,3 @@
+"""NetWorthTracker - 个人资产负债记录与净资产追踪。"""
+
+__version__ = "1.0.0"

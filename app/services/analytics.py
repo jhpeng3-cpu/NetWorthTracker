@@ -1,0 +1,354 @@
+"""净资产、资产分布、历史曲线与变化拆解。
+
+前向填充核心：
+- holdings_as_of() 使用窗口函数 row_number() OVER (PARTITION BY account_id
+  ORDER BY snapshot_date DESC) 取每个账户在目标日期及之前最近的一条估值。
+- 历史曲线一次性读取快照并按日期指针推进，时间复杂度 O(快照数 + 时间点数)。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, timedelta
+from decimal import Decimal
+from typing import Dict, List, Optional, Tuple
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.db.models import (
+    CATEGORY_LABELS,
+    SIDE_ASSET,
+    SIDE_LABELS,
+    SIDE_LIABILITY,
+    Account,
+    ValuationSnapshot,
+)
+from app.utils.dates import build_period_points
+from app.utils.money import ratio
+
+
+@dataclass(frozen=True)
+class Holding:
+    account_id: int
+    account_name: str
+    side: str
+    category: str
+    value: Optional[Decimal]
+    snapshot_date: Optional[date]
+
+
+@dataclass(frozen=True)
+class NetWorthPoint:
+    on_date: date
+    assets: Decimal
+    liabilities: Decimal
+    net: Decimal
+
+
+@dataclass(frozen=True)
+class PieSlice:
+    label: str
+    value: Decimal
+    percent: Decimal
+
+
+@dataclass(frozen=True)
+class CurrentSummary:
+    assets: Decimal
+    liabilities: Decimal
+    net: Decimal
+    previous_net: Optional[Decimal]
+    change: Optional[Decimal]
+    change_rate: Optional[Decimal]
+    latest_date: Optional[date]
+    previous_date: Optional[date]
+    account_count: int
+    snapshot_count: int
+
+
+@dataclass(frozen=True)
+class DecompositionRow:
+    account_id: int
+    account_name: str
+    side: str
+    category: str
+    start_value: Decimal
+    end_value: Decimal
+    change: Decimal
+
+    @property
+    def side_label(self) -> str:
+        return SIDE_LABELS.get(self.side, self.side)
+
+    @property
+    def category_label(self) -> str:
+        return CATEGORY_LABELS.get(self.category, self.category)
+
+
+@dataclass(frozen=True)
+class Decomposition:
+    start_point: NetWorthPoint
+    end_point: NetWorthPoint
+    rows: List[DecompositionRow]
+
+
+def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
+    """某个日期各未归档账户的最新估值（前向填充，窗口函数实现）。"""
+    ranked = (
+        select(
+            ValuationSnapshot.account_id.label("account_id"),
+            ValuationSnapshot.value.label("value"),
+            ValuationSnapshot.snapshot_date.label("snapshot_date"),
+            func.row_number()
+            .over(
+                partition_by=ValuationSnapshot.account_id,
+                order_by=ValuationSnapshot.snapshot_date.desc(),
+            )
+            .label("rn"),
+        )
+        .where(ValuationSnapshot.snapshot_date <= on_date)
+        .subquery("ranked_holdings")
+    )
+    stmt = (
+        select(
+            Account.id,
+            Account.name,
+            Account.side,
+            Account.category,
+            ranked.c.value,
+            ranked.c.snapshot_date,
+        )
+        .join(
+            ranked,
+            (ranked.c.account_id == Account.id) & (ranked.c.rn == 1),
+        )
+        .where(Account.archived.is_(False))
+        .order_by(Account.side, Account.name)
+    )
+    return [
+        Holding(
+            account_id=row.id,
+            account_name=row.name,
+            side=row.side,
+            category=row.category,
+            value=row.value,
+            snapshot_date=row.snapshot_date,
+        )
+        for row in session.execute(stmt).all()
+    ]
+
+
+def _sum_side(holdings: List[Holding], side: str) -> Decimal:
+    total = Decimal("0.00")
+    for item in holdings:
+        if item.side == side and item.value is not None:
+            total += item.value
+    return total
+
+
+def net_worth_on(session: Session, on_date: date) -> NetWorthPoint:
+    holdings = holdings_as_of(session, on_date)
+    assets = _sum_side(holdings, SIDE_ASSET)
+    liabilities = _sum_side(holdings, SIDE_LIABILITY)
+    return NetWorthPoint(
+        on_date=on_date,
+        assets=assets,
+        liabilities=liabilities,
+        net=assets - liabilities,
+    )
+
+
+def first_snapshot_date(session: Session) -> Optional[date]:
+    return session.scalar(
+        select(func.min(ValuationSnapshot.snapshot_date))
+        .select_from(ValuationSnapshot)
+        .join(Account, Account.id == ValuationSnapshot.account_id)
+        .where(Account.archived.is_(False))
+    )
+
+
+def current_summary(session: Session, today: Optional[date] = None) -> CurrentSummary:
+    today = today or date.today()
+    account_count = int(
+        session.scalar(
+            select(func.count()).select_from(Account).where(Account.archived.is_(False))
+        )
+        or 0
+    )
+    snapshot_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ValuationSnapshot)
+            .join(Account, Account.id == ValuationSnapshot.account_id)
+            .where(Account.archived.is_(False))
+        )
+        or 0
+    )
+    dates = list(
+        session.scalars(
+            select(ValuationSnapshot.snapshot_date)
+            .join(Account, Account.id == ValuationSnapshot.account_id)
+            .where(
+                Account.archived.is_(False),
+                ValuationSnapshot.snapshot_date <= today,
+            )
+            .distinct()
+            .order_by(ValuationSnapshot.snapshot_date.desc())
+            .limit(2)
+        )
+    )
+    latest_date = dates[0] if dates else None
+    previous_date = dates[1] if len(dates) > 1 else None
+
+    current = net_worth_on(session, today)
+    if previous_date is None:
+        previous_net = None
+        change = None
+        change_rate = None
+    else:
+        previous = net_worth_on(session, previous_date)
+        previous_net = previous.net
+        change = current.net - previous.net
+        if previous_net == 0:
+            change_rate = None
+        else:
+            change_rate = (change / abs(previous_net) * Decimal("100")).quantize(
+                Decimal("0.01")
+            )
+
+    return CurrentSummary(
+        assets=current.assets,
+        liabilities=current.liabilities,
+        net=current.net,
+        previous_net=previous_net,
+        change=change,
+        change_rate=change_rate,
+        latest_date=latest_date,
+        previous_date=previous_date,
+        account_count=account_count,
+        snapshot_count=snapshot_count,
+    )
+
+
+def distribution(
+    session: Session,
+    side: str,
+    group_by: str = "category",
+    on_date: Optional[date] = None,
+) -> List[PieSlice]:
+    day = on_date or date.today()
+    holdings = holdings_as_of(session, day)
+    buckets: Dict[str, Decimal] = {}
+    for item in holdings:
+        if item.side != side or item.value is None or item.value <= 0:
+            continue
+        if group_by == "account":
+            key = item.account_name
+        else:
+            key = CATEGORY_LABELS.get(item.category, item.category)
+        buckets[key] = buckets.get(key, Decimal("0.00")) + item.value
+    total = sum(buckets.values(), Decimal("0.00"))
+    if total <= 0:
+        return []
+    slices = [
+        PieSlice(label=label, value=value, percent=ratio(value, total))
+        for label, value in buckets.items()
+    ]
+    slices.sort(key=lambda item: item.value, reverse=True)
+    return slices
+
+
+def history_points(
+    session: Session,
+    start: date,
+    end: date,
+    granularity: str = "day",
+) -> List[NetWorthPoint]:
+    """返回区间内的净资产序列。
+
+    日粒度：区间内逐日计算，无快照的日期沿用最近一次估值；
+    月/年粒度：取每个周期末，当前周期取今天。
+    """
+    if start > end:
+        return []
+
+    rows: List[Tuple[date, int, str, Decimal]] = [
+        (row.snapshot_date, row.account_id, row.side, row.value)
+        for row in session.execute(
+            select(
+                ValuationSnapshot.snapshot_date,
+                ValuationSnapshot.account_id,
+                Account.side,
+                ValuationSnapshot.value,
+            )
+            .join(Account, Account.id == ValuationSnapshot.account_id)
+            .where(
+                Account.archived.is_(False),
+                ValuationSnapshot.snapshot_date <= end,
+            )
+            .order_by(ValuationSnapshot.snapshot_date, ValuationSnapshot.id)
+        ).all()
+    ]
+    if not rows:
+        return []
+
+    if granularity == "day":
+        total_days = (end - start).days
+        target_dates = [start + timedelta(days=offset) for offset in range(total_days + 1)]
+    else:
+        target_dates = build_period_points(start, end, granularity)
+
+    current: Dict[int, Tuple[str, Decimal]] = {}
+    cursor = 0
+    result: List[NetWorthPoint] = []
+    for target in target_dates:
+        while cursor < len(rows) and rows[cursor][0] <= target:
+            _, account_id, side, value = rows[cursor]
+            current[account_id] = (side, value)
+            cursor += 1
+        assets = Decimal("0.00")
+        liabilities = Decimal("0.00")
+        for side, value in current.values():
+            if side == SIDE_ASSET:
+                assets += value
+            else:
+                liabilities += value
+        result.append(
+            NetWorthPoint(
+                on_date=target,
+                assets=assets,
+                liabilities=liabilities,
+                net=assets - liabilities,
+            )
+        )
+    return result
+
+
+def decompose(session: Session, start: date, end: date) -> Decomposition:
+    start_point = net_worth_on(session, start)
+    end_point = net_worth_on(session, end)
+    start_holdings = {item.account_id: item for item in holdings_as_of(session, start)}
+    end_holdings = {item.account_id: item for item in holdings_as_of(session, end)}
+
+    rows: List[DecompositionRow] = []
+    for account_id in set(start_holdings) | set(end_holdings):
+        first = start_holdings.get(account_id)
+        last = end_holdings.get(account_id)
+        meta = last or first
+        if meta is None:
+            continue
+        start_value = first.value if first and first.value is not None else Decimal("0.00")
+        end_value = last.value if last and last.value is not None else Decimal("0.00")
+        rows.append(
+            DecompositionRow(
+                account_id=account_id,
+                account_name=meta.account_name,
+                side=meta.side,
+                category=meta.category,
+                start_value=start_value,
+                end_value=end_value,
+                change=end_value - start_value,
+            )
+        )
+    rows.sort(key=lambda item: item.change, reverse=True)
+    return Decomposition(start_point=start_point, end_point=end_point, rows=rows)
