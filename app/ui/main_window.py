@@ -21,16 +21,15 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.config import AppConfig
 from app.db.engine import db
-from app.services import backup, exchange_rates
+from app.services import backup, exchange_rates, quotes
 from app.ui.common import show_error, show_info
 from app.ui.dialogs.db_config_dialog import DbConfigDialog
 from app.ui.pages.accounts import AccountsPage
-from app.ui.pages.batch import BatchPage
 from app.ui.pages.base import BasePage
 from app.ui.pages.dashboard import DashboardPage
 from app.ui.pages.data import DataPage
-from app.ui.pages.entry import EntryPage
 from app.ui.pages.history import HistoryPage
+from app.ui.pages.profit import ProfitPage
 from app.ui.pages.settings import SettingsPage
 from app.ui.styles import build_stylesheet
 from app.utils.async_task import run_async
@@ -49,7 +48,12 @@ class MainWindow(QMainWindow):
         self._apply_theme(self.config.theme)
         QTimer.singleShot(1500, self._auto_backup_if_needed)
         QTimer.singleShot(2500, self._startup_rate_refresh)
+        QTimer.singleShot(3500, self._startup_quote_refresh)
         self._schedule_midnight_rate_fetch()
+        self._quote_timer = QTimer(self)
+        self._quote_timer.setInterval(5 * 60 * 1000)
+        self._quote_timer.timeout.connect(self._refresh_quotes)
+        self._quote_timer.start()
 
     # ---- 构建 ----
     def _build_menu(self) -> None:
@@ -107,22 +111,27 @@ class MainWindow(QMainWindow):
 
         self.dashboard_page = DashboardPage(self.config)
         self.accounts_page = AccountsPage(self.config)
-        self.entry_page = EntryPage(self.config)
-        self.batch_page = BatchPage(self.config)
         self.history_page = HistoryPage(self.config)
+        self.profit_page = ProfitPage(self.config)
         self.data_page = DataPage(self.config)
         self.settings_page = SettingsPage(self.config)
 
         self._pages: List[BasePage] = [
             self.dashboard_page,
             self.accounts_page,
-            self.entry_page,
-            self.batch_page,
             self.history_page,
+            self.profit_page,
             self.data_page,
             self.settings_page,
         ]
-        nav_labels = ["仪表盘", "账户管理", "估值录入", "批量录入", "历史与明细", "数据管理", "设置"]
+        nav_labels = [
+            "仪表盘",
+            "账户管理",
+            "历史与明细",
+            "盈亏分析",
+            "数据管理",
+            "设置",
+        ]
 
         for page, label in zip(self._pages, nav_labels):
             self.stack.addWidget(page)
@@ -157,15 +166,13 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         page = self._pages[index]
-        # 批量录入页保留用户尚未保存的输入，不自动刷新。
-        if page is not self.batch_page:
-            page.refresh()
+        page.refresh()
 
     def _on_data_changed(self) -> None:
         self.dashboard_page.refresh()
         self.accounts_page.refresh()
-        self.entry_page.refresh()
         self.history_page.refresh()
+        self.profit_page.refresh()
         self.data_page.refresh()
         self.statusBar().showMessage("数据已更新", 3000)
 
@@ -178,10 +185,9 @@ class MainWindow(QMainWindow):
         self._apply_theme(self.config.theme)
         self.dashboard_page.refresh()
         self.accounts_page.refresh()
-        self.entry_page.refresh()
         self.history_page.refresh()
+        self.profit_page.refresh()
         self.data_page.refresh()
-        self.batch_page.refresh()
         self.settings_page.refresh_db_info()
         self.statusBar().showMessage("设置已应用", 3000)
 
@@ -246,6 +252,34 @@ class MainWindow(QMainWindow):
         if db.is_configured:
             self._refresh_rates()
 
+    # ---- 行情 ----
+    def _startup_quote_refresh(self) -> None:
+        if db.is_configured:
+            self._refresh_quotes()
+
+    def _refresh_quotes(self) -> None:
+        if not db.is_configured:
+            return
+
+        def task():
+            with db.session_scope() as session:
+                return quotes.refresh_stock_quotes(session)
+
+        def success(result) -> None:
+            if result.fetched or result.snapshots:
+                self._on_data_changed()
+                self.statusBar().showMessage(
+                    f"行情已更新：{result.fetched} 个代码，写入 {result.snapshots} 条估值",
+                    6000,
+                )
+            elif result.failed:
+                self.statusBar().showMessage("行情获取失败，稍后自动重试", 6000)
+
+        def failure(_message: str) -> None:
+            self.statusBar().showMessage("行情刷新失败，稍后自动重试", 6000)
+
+        run_async(task, success, failure)
+
     def _schedule_midnight_rate_fetch(self) -> None:
         now = QDateTime.currentDateTime()
         next_midnight = QDateTime(now.date().addDays(1), QTime(0, 0))
@@ -282,5 +316,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"汇率获取失败：{exc}", 8000)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._quote_timer.stop()
         db.dispose()
         super().closeEvent(event)

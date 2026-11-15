@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.snapshots import SnapshotExistsError, SnapshotRow, SnapshotValidationError
-from app.ui.common import primary_button, show_error, show_warning
+from app.ui.common import primary_button, show_exception, show_warning
 from app.utils.money import AmountError, fmt_money, parse_amount
 
 
@@ -104,6 +104,6 @@ class SnapshotEditDialog(QDialog):
             show_warning(self, "无法保存", str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "保存失败", str(exc))
+            show_exception(self, "保存失败", exc)
             return
         self.accept()

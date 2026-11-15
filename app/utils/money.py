@@ -11,6 +11,20 @@ from app.utils.exceptions import AppValidationError
 CENT = Decimal("0.01")
 MAX_AMOUNT = Decimal("9999999999999999.99")  # NUMERIC(18,2) 上限
 
+CURRENCY_SYMBOLS = {
+    "USD": "$",
+    "JPY": "JP¥",
+    "MOP": "MOP$",
+    "HKD": "HK$",
+}
+
+
+def symbol_for(currency: str, base_symbol: str = "¥") -> str:
+    """按币种返回显示符号；CNY 使用设置中的基准符号。"""
+    if not currency or currency == "CNY":
+        return base_symbol
+    return CURRENCY_SYMBOLS.get(currency, f"{currency} ")
+
 
 class AmountError(AppValidationError):
     """金额格式或范围不合法。"""

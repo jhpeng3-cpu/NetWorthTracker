@@ -17,7 +17,8 @@ from app.db.models import Base  # noqa: E402
 
 config = context.config
 
-if config.config_file_name is not None:
+if config.config_file_name is not None and not config.attributes.get("sqlalchemy_url"):
+    # 仅在命令行运行 alembic 时接管日志；应用内迁移不应重置已配置的日志处理器
     try:
         fileConfig(config.config_file_name)
     except Exception:

@@ -139,6 +139,20 @@ QFrame#Card, QFrame#Panel {
     border: 1px solid $border;
     border-radius: 12px;
 }
+QFrame#RateChip {
+    background: $surface_alt;
+    border: 1px solid $border;
+    border-radius: 10px;
+}
+QLabel#RateCode {
+    color: $muted;
+    font-size: 11px;
+}
+QLabel#RateValue {
+    font-size: 13px;
+    font-weight: 700;
+    color: $text;
+}
 QLabel#CardTitle {
     color: $muted;
     font-size: 12px;

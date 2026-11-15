@@ -139,6 +139,21 @@ def set_columns(table: QTableWidget, widths: List[int]) -> None:
         table.setColumnWidth(index, width)
 
 
+def align_headers(table: QTableWidget, right_columns: Iterable[int] = ()) -> None:
+    """让表头与列内容对齐：数字列右对齐，其余左对齐。"""
+    right = set(right_columns)
+    for column in range(table.columnCount()):
+        item = table.horizontalHeaderItem(column)
+        if item is None:
+            continue
+        horizontal = (
+            Qt.AlignmentFlag.AlignRight
+            if column in right
+            else Qt.AlignmentFlag.AlignLeft
+        )
+        item.setTextAlignment(horizontal | Qt.AlignmentFlag.AlignVCenter)
+
+
 def selected_row(table: QTableWidget) -> int:
     rows = table.selectionModel().selectedRows() if table.selectionModel() else []
     return rows[0].row() if rows else -1
@@ -188,6 +203,13 @@ def show_error(parent: QWidget, title: str, text: str) -> None:
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
     box.button(QMessageBox.StandardButton.Ok).setText("知道了")
     box.exec()
+
+
+def show_exception(parent: QWidget, title: str, exc: BaseException) -> None:
+    """统一异常出口：日志记录完整堆栈，界面只展示友好文案。"""
+    from app.utils.exceptions import report_exception
+
+    show_error(parent, title, report_exception(exc, title))
 
 
 def money_text(value: Optional[Decimal], symbol: str, placeholder: str = "—") -> str:

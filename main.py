@@ -1,27 +1,36 @@
 """应用入口。"""
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
+import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
 
-from app import __version__
-from app.config import AppConfig, app_dir
-from app.db.engine import db
-from app.db.migrate import run_migrations
-from app.utils.exceptions import install_global_exception_handler
-from app.ui.dialogs.db_config_dialog import DbConfigDialog
-from app.ui.main_window import MainWindow
-from app.ui.styles import build_stylesheet
-
-
-
+def _report_startup_failure() -> None:
+    """启动失败兜底：写入 startup_error.log 并弹出系统提示框。"""
+    detail = traceback.format_exc()
+    try:
+        target = Path(__file__).resolve().parent / "startup_error.log"
+        target.write_text(detail, encoding="utf-8")
+        note = f"详细堆栈已写入：\n{target}"
+    except OSError:
+        note = ""
+    lines = [line for line in detail.strip().splitlines() if line.strip()]
+    summary = lines[-1] if lines else "未知错误"
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0, f"程序启动失败：\n\n{summary}\n\n{note}", "净资产管理", 0x10
+        )
+    except Exception:  # noqa: BLE001
+        print(detail, file=sys.stderr)
 
 
 def setup_logging() -> None:
+    from app.config import app_dir
+
     handlers = [logging.StreamHandler()]
     try:
         log_path = app_dir() / "networth.log"
@@ -43,6 +52,17 @@ def setup_logging() -> None:
 
 
 def main() -> int:
+    from PySide6.QtWidgets import QApplication
+
+    from app import __version__
+    from app.config import AppConfig
+    from app.db.engine import db
+    from app.db.migrate import run_migrations
+    from app.ui.dialogs.db_config_dialog import DbConfigDialog
+    from app.ui.main_window import MainWindow
+    from app.ui.styles import build_stylesheet
+    from app.utils.exceptions import install_global_exception_handler
+
     setup_logging()
     install_global_exception_handler()
     app = QApplication(sys.argv)
@@ -79,4 +99,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException:  # noqa: BLE001
+        _report_startup_failure()
+        sys.exit(1)

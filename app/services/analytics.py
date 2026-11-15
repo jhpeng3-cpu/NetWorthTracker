@@ -24,6 +24,7 @@ from app.db.models import (
     SIDE_LABELS,
     SIDE_LIABILITY,
     Account,
+    AccountItem,
     ValuationSnapshot,
 )
 from app.services import exchange_rates
@@ -40,6 +41,8 @@ class Holding:
     value: Optional[Decimal]
     snapshot_date: Optional[date]
     currency: str = "CNY"
+    item_id: int = 0
+    item_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,7 @@ class DecompositionRow:
     start_value: Decimal
     end_value: Decimal
     change: Decimal
+    item_name: str = ""
 
     @property
     def side_label(self) -> str:
@@ -98,15 +102,15 @@ class Decomposition:
 
 
 def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
-    """某个日期各未归档账户的最新估值（前向填充，窗口函数实现）。"""
+    """某个日期各未归档账户子项的最新估值（前向填充，窗口函数实现）。"""
     ranked = (
         select(
-            ValuationSnapshot.account_id.label("account_id"),
+            ValuationSnapshot.item_id.label("item_id"),
             ValuationSnapshot.value.label("value"),
             ValuationSnapshot.snapshot_date.label("snapshot_date"),
             func.row_number()
             .over(
-                partition_by=ValuationSnapshot.account_id,
+                partition_by=ValuationSnapshot.item_id,
                 order_by=ValuationSnapshot.snapshot_date.desc(),
             )
             .label("rn"),
@@ -116,30 +120,36 @@ def holdings_as_of(session: Session, on_date: date) -> List[Holding]:
     )
     stmt = (
         select(
-            Account.id,
-            Account.name,
+            ranked.c.item_id.label("item_id"),
+            AccountItem.name.label("item_name"),
+            AccountItem.category,
+            AccountItem.currency,
+            Account.id.label("account_id"),
+            Account.name.label("account_name"),
             Account.side,
-            Account.category,
-            Account.currency,
             ranked.c.value,
             ranked.c.snapshot_date,
         )
+        .select_from(AccountItem)
+        .join(Account, Account.id == AccountItem.account_id)
         .join(
             ranked,
-            (ranked.c.account_id == Account.id) & (ranked.c.rn == 1),
+            (ranked.c.item_id == AccountItem.id) & (ranked.c.rn == 1),
         )
         .where(Account.archived.is_(False))
-        .order_by(Account.side, Account.name)
+        .order_by(Account.side, Account.name, AccountItem.sort_order, AccountItem.id)
     )
     return [
         Holding(
-            account_id=row.id,
-            account_name=row.name,
+            account_id=row.account_id,
+            account_name=row.account_name,
             side=row.side,
             category=row.category,
             currency=row.currency,
             value=row.value,
             snapshot_date=row.snapshot_date,
+            item_id=row.item_id,
+            item_name=row.item_name,
         )
         for row in session.execute(stmt).all()
     ]
@@ -289,16 +299,17 @@ def history_points(
         return []
 
     rows: List[Tuple[date, int, str, str, Decimal]] = [
-        (row.snapshot_date, row.account_id, row.side, row.currency, row.value)
+        (row.snapshot_date, row.item_id, row.side, row.currency, row.value)
         for row in session.execute(
             select(
                 ValuationSnapshot.snapshot_date,
-                ValuationSnapshot.account_id,
+                ValuationSnapshot.item_id,
                 Account.side,
-                Account.currency,
+                AccountItem.currency,
                 ValuationSnapshot.value,
             )
-            .join(Account, Account.id == ValuationSnapshot.account_id)
+            .join(AccountItem, AccountItem.id == ValuationSnapshot.item_id)
+            .join(Account, Account.id == AccountItem.account_id)
             .where(
                 Account.archived.is_(False),
                 ValuationSnapshot.snapshot_date <= end,
@@ -351,9 +362,9 @@ def decompose(session: Session, start: date, end: date) -> Decomposition:
     lookup = exchange_rates.build_rate_lookup(session)
 
     rows: List[DecompositionRow] = []
-    for account_id in set(start_holdings) | set(end_holdings):
-        first = start_holdings.get(account_id)
-        last = end_holdings.get(account_id)
+    for item_id in set(start_holdings) | set(end_holdings):
+        first = start_holdings.get(item_id)
+        last = end_holdings.get(item_id)
         meta = last or first
         if meta is None:
             continue
@@ -365,13 +376,14 @@ def decompose(session: Session, start: date, end: date) -> Decomposition:
         )
         rows.append(
             DecompositionRow(
-                account_id=account_id,
+                account_id=meta.account_id,
                 account_name=meta.account_name,
                 side=meta.side,
                 category=meta.category,
                 start_value=start_value,
                 end_value=end_value,
                 change=end_value - start_value,
+                item_name=meta.item_name,
             )
         )
     rows.sort(key=lambda item: item.change, reverse=True)

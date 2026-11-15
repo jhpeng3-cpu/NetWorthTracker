@@ -4,17 +4,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -42,9 +44,23 @@ class SettingsPage(BasePage):
     def _build_ui(self) -> None:
         self.add_header("设置", "显示偏好保存在 config.ini；数据库连接可随时修改。")
 
+        # 内容较多，放进滚动区，避免窗口较矮时汇率行被挤压重叠。
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("Page")
+        self.content_layout = QVBoxLayout(content)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(12)
+        scroll.setWidget(content)
+        self.root.addWidget(scroll)
+        layout = self.content_layout
+
         appearance = QGroupBox("显示")
         appearance_form = QFormLayout(appearance)
-        appearance_form.setContentsMargins(12, 14, 12, 10)
+        appearance_form.setContentsMargins(0, 0, 0, 0)
         appearance_form.setSpacing(9)
         self.currency_edit = QLineEdit()
         self.currency_edit.setMaxLength(4)
@@ -55,11 +71,11 @@ class SettingsPage(BasePage):
         self.theme_combo.setFixedWidth(140)
         appearance_form.addRow("货币符号", self.currency_edit)
         appearance_form.addRow("主题", self.theme_combo)
-        self.root.addWidget(appearance)
+        layout.addWidget(appearance)
 
         backup_group = QGroupBox("自动备份")
         backup_form = QFormLayout(backup_group)
-        backup_form.setContentsMargins(12, 14, 12, 10)
+        backup_form.setContentsMargins(0, 0, 0, 0)
         backup_form.setSpacing(9)
         self.auto_backup_check = QCheckBox("启动应用时自动备份数据库")
         backup_form.addRow("", self.auto_backup_check)
@@ -77,14 +93,14 @@ class SettingsPage(BasePage):
         backup_hint = QLabel("自动备份依赖 PATH 中的 mysqldump；失败不会影响应用启动。")
         backup_hint.setObjectName("Hint")
         backup_form.addRow("", backup_hint)
-        self.root.addWidget(backup_group)
+        layout.addWidget(backup_group)
 
         rate_group = QGroupBox("汇率（兑人民币）")
         rate_layout = QVBoxLayout(rate_group)
-        rate_layout.setContentsMargins(12, 14, 12, 10)
+        rate_layout.setContentsMargins(0, 0, 0, 0)
         rate_layout.setSpacing(8)
         self.rate_form = QFormLayout()
-        self.rate_form.setSpacing(7)
+        self.rate_form.setSpacing(8)
         self.rate_labels: Dict[str, QLabel] = {}
         for code in CURRENCY_CODES:
             if code == "CNY":
@@ -102,11 +118,11 @@ class SettingsPage(BasePage):
         refresh_rate_button.clicked.connect(self._refresh_rates)
         rate_row.addWidget(refresh_rate_button)
         rate_layout.addLayout(rate_row)
-        self.root.addWidget(rate_group)
+        layout.addWidget(rate_group)
 
         database_group = QGroupBox("数据库连接")
         database_layout = QVBoxLayout(database_group)
-        database_layout.setContentsMargins(12, 14, 12, 10)
+        database_layout.setContentsMargins(0, 0, 0, 0)
         database_layout.setSpacing(8)
         self.db_form = QFormLayout()
         self.db_form.setSpacing(7)
@@ -129,7 +145,7 @@ class SettingsPage(BasePage):
         db_buttons.addWidget(db_button)
         db_buttons.addStretch(1)
         database_layout.addLayout(db_buttons)
-        self.root.addWidget(database_group)
+        layout.addWidget(database_group)
 
         save_row = QHBoxLayout()
         self.status_label = QLabel("")
@@ -139,8 +155,8 @@ class SettingsPage(BasePage):
         save_button = primary_button("保存设置")
         save_button.clicked.connect(self._save)
         save_row.addWidget(save_button)
-        self.root.addLayout(save_row)
-        self.root.addStretch(1)
+        layout.addLayout(save_row)
+        layout.addStretch(1)
 
     def reload_from_config(self) -> None:
         self.currency_edit.setText(self.config.currency_symbol)
@@ -149,6 +165,13 @@ class SettingsPage(BasePage):
             self.theme_combo.setCurrentIndex(theme_index)
         self.auto_backup_check.setChecked(self.config.auto_backup)
         self.backup_dir_edit.setText(self.config.backup_dir)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().showEvent(event)
+        # 保证汇率文本有足够行高，避免高 DPI 下文字被挤压覆盖。
+        height = self.fontMetrics().height() + 8
+        for label in self.rate_labels.values():
+            label.setMinimumHeight(height)
 
     def refresh(self) -> None:
         self.refresh_db_info()

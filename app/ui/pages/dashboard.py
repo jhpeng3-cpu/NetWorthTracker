@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.db.engine import db
 from app.services import analytics
+from app.services import profit as profit_service
 from app.services.analytics import CurrentSummary, NetWorthPoint, PieSlice
+from app.services.profit import PortfolioSummary
 from app.ui.common import StatCard, show_error
 from app.ui.pages.base import BasePage
 from app.ui.styles import palette
@@ -41,6 +43,7 @@ class DashboardBundle:
     points: List[NetWorthPoint]
     start: date
     end: date
+    profit: PortfolioSummary
 
 
 def _pack_chart_panel(
@@ -100,7 +103,14 @@ class DashboardPage(BasePage):
         self.liability_card = StatCard("总负债", "尚无数据")
         self.net_card = StatCard("净资产", "资产 − 负债")
         self.change_card = StatCard("较上次快照", "暂无上一期快照")
-        for card in (self.asset_card, self.liability_card, self.net_card, self.change_card):
+        self.profit_card = StatCard("持仓盈亏", "尚无成本记录")
+        for card in (
+            self.net_card,
+            self.asset_card,
+            self.liability_card,
+            self.change_card,
+            self.profit_card,
+        ):
             cards.addWidget(card, 1)
         self.root.addLayout(cards)
 
@@ -203,6 +213,7 @@ class DashboardPage(BasePage):
                 if first is not None and start < first:
                     start = first
                 points = analytics.history_points(session, start, today, granularity)
+                profit_rows = profit_service.profit_rows(session, today=today)
                 return DashboardBundle(
                     summary=summary,
                     assets=assets,
@@ -210,6 +221,7 @@ class DashboardPage(BasePage):
                     points=points,
                     start=start,
                     end=today,
+                    profit=profit_service.portfolio_summary(profit_rows),
                 )
 
         run_async(
@@ -262,6 +274,26 @@ class DashboardPage(BasePage):
                 tone=tone,
             )
 
+        portfolio = bundle.profit
+        if portfolio.item_count == 0:
+            self.profit_card.set_value("—", "尚无成本记录", tone="neutral")
+        else:
+            tone = (
+                "positive"
+                if portfolio.pnl_cny > 0
+                else ("negative" if portfolio.pnl_cny < 0 else "neutral")
+            )
+            hint = f"市值 {fmt_money(portfolio.value_cny, symbol)} · 成本 {fmt_money(portfolio.cost_cny, symbol)}"
+            if portfolio.pnl_rate is not None:
+                hint += f" · {fmt_percent(portfolio.pnl_rate)}"
+            if portfolio.missing_rate:
+                hint += f" · {portfolio.missing_rate} 项缺汇率"
+            self.profit_card.set_value(
+                fmt_signed_money(portfolio.pnl_cny, symbol),
+                hint,
+                tone=tone,
+            )
+
         self.asset_chart.set_data(
             bundle.assets,
             symbol,
@@ -287,8 +319,7 @@ class DashboardPage(BasePage):
             self.empty_label.show()
         elif summary.snapshot_count == 0:
             self.empty_label.setText(
-                "账户已创建，但还没有估值快照。请到「估值录入」记录第一笔估值，"
-                "或使用「批量录入」一次性更新。"
+                "账户已创建，但还没有估值快照。请到「账户管理」录入第一笔估值。"
             )
             self.empty_label.show()
         else:

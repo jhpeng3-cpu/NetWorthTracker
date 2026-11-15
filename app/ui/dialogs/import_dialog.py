@@ -21,9 +21,15 @@ from app.services.csv_io import (
     ImportResult,
     ImportRow,
 )
-from app.ui.common import make_table, primary_button, set_columns, show_error, show_warning
+from app.ui.common import (
+    make_table,
+    primary_button,
+    set_columns,
+    show_exception,
+    show_warning,
+)
 from app.ui.styles import palette
-from app.utils.money import fmt_money
+from app.utils.money import fmt_money, symbol_for
 
 
 class ImportPreviewDialog(QDialog):
@@ -125,7 +131,7 @@ class ImportPreviewDialog(QDialog):
                 if color is not None:
                     item.setForeground(QColor(color))
                 if row.value is not None and column == 3:
-                    item.setText(fmt_money(row.value))
+                    item.setText(fmt_money(row.value, symbol_for(row.currency)))
 
     def _do_import(self) -> None:
         valid = [row for row in self._rows if row.is_valid]
@@ -144,6 +150,6 @@ class ImportPreviewDialog(QDialog):
         try:
             self.import_result = self._on_import(policy, skip_invalid)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "导入失败", str(exc))
+            show_exception(self, "导入失败", exc)
             return
         self.accept()

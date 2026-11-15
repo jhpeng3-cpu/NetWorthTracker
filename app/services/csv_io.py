@@ -12,14 +12,20 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Account, CATEGORY_LABELS, SIDE_LABELS, ValuationSnapshot
+from app.db.models import (
+    Account,
+    AccountItem,
+    CATEGORY_LABELS,
+    SIDE_LABELS,
+    ValuationSnapshot,
+)
 from app.services import accounts as account_service
 from app.services import snapshots as snapshot_service
 from app.utils.exceptions import AppRuntimeError
 from app.utils.money import AmountError, parse_amount
 
 IMPORT_REQUIRED_HEADERS = ("account_name", "snapshot_date", "value")
-IMPORT_TEMPLATE = "account_name,snapshot_date,value,note\n"
+IMPORT_TEMPLATE = "account_name,item_name,snapshot_date,value,note\n"
 
 DUPLICATE_SKIP = "skip"
 DUPLICATE_OVERWRITE = "overwrite"
@@ -33,14 +39,18 @@ class CsvError(AppRuntimeError):
 class ImportRow:
     line_no: int
     account_name: str = ""
+    item_name: str = ""
     date_text: str = ""
     value_text: str = ""
     note: str = ""
     account_id: Optional[int] = None
+    item_id: Optional[int] = None
+    category: str = ""
     snapshot_date: Optional[date] = None
     value: Optional[Decimal] = None
     exists: bool = False
     errors: List[str] = field(default_factory=list)
+    currency: str = "CNY"
 
     @property
     def status(self) -> str:
@@ -96,6 +106,7 @@ def read_snapshot_csv(path: Path) -> List[ImportRow]:
             ImportRow(
                 line_no=index,
                 account_name=normalized.get("account_name", ""),
+                item_name=normalized.get("item_name", ""),
                 date_text=normalized.get("snapshot_date", ""),
                 value_text=normalized.get("value", ""),
                 note=normalized.get("note", ""),
@@ -116,15 +127,36 @@ def _parse_date(text: str) -> date:
 
 
 def validate_import_rows(session: Session, rows: Sequence[ImportRow]) -> List[ImportRow]:
-    account_rows = session.execute(select(Account.id, Account.name, Account.archived)).all()
-    account_map = {row.name: (row.id, bool(row.archived)) for row in account_rows}
+    account_rows = session.execute(
+        select(Account.id, Account.name, Account.archived)
+    ).all()
+    account_map = {
+        row.name: (row.id, bool(row.archived)) for row in account_rows
+    }
+    item_rows = session.execute(
+        select(
+            AccountItem.id,
+            AccountItem.account_id,
+            AccountItem.name,
+            AccountItem.category,
+            AccountItem.currency,
+        )
+    ).all()
+    items_by_account: Dict[int, List[Tuple[int, str, str, str]]] = {}
+    for row in item_rows:
+        items_by_account.setdefault(row.account_id, []).append(
+            (row.id, row.name, row.category, row.currency)
+        )
 
     for row in rows:
         row.errors = []
         row.account_id = None
+        row.item_id = None
+        row.category = ""
         row.snapshot_date = None
         row.value = None
         row.exists = False
+        row.currency = "CNY"
 
         if not row.account_name:
             row.errors.append("账户名称为空")
@@ -136,6 +168,22 @@ def validate_import_rows(session: Session, rows: Sequence[ImportRow]) -> List[Im
                 row.errors.append("账户已归档")
             else:
                 row.account_id = account[0]
+                candidates = items_by_account.get(account[0], [])
+                if row.item_name:
+                    matched = next(
+                        (entry for entry in candidates if entry[1] == row.item_name),
+                        None,
+                    )
+                    if matched is None:
+                        row.errors.append("子项不存在")
+                    else:
+                        row.item_id, _name, row.category, row.currency = matched
+                elif len(candidates) == 1:
+                    row.item_id, _name, row.category, row.currency = candidates[0]
+                elif not candidates:
+                    row.errors.append("账户没有类别子项")
+                else:
+                    row.errors.append("该账户有多个子项，请填写 item_name")
 
         try:
             row.snapshot_date = _parse_date(row.date_text)
@@ -149,9 +197,9 @@ def validate_import_rows(session: Session, rows: Sequence[ImportRow]) -> List[Im
 
     seen: Dict[Tuple[int, date], int] = {}
     for row in rows:
-        if row.account_id is None or row.snapshot_date is None:
+        if row.item_id is None or row.snapshot_date is None:
             continue
-        key = (row.account_id, row.snapshot_date)
+        key = (row.item_id, row.snapshot_date)
         if key in seen:
             row.errors.append(f"与第 {seen[key]} 行账户和日期重复")
         else:
@@ -199,11 +247,13 @@ def import_rows(
     for row in rows:
         if not row.is_valid:
             continue
-        if row.account_id is None or row.snapshot_date is None or row.value is None:
+        if row.item_id is None or row.snapshot_date is None or row.value is None:
+            continue
+        if row.account_id is None:
             continue
         existing = session.scalar(
             select(ValuationSnapshot).where(
-                ValuationSnapshot.account_id == row.account_id,
+                ValuationSnapshot.item_id == row.item_id,
                 ValuationSnapshot.snapshot_date == row.snapshot_date,
             )
         )
@@ -218,6 +268,7 @@ def import_rows(
         session.add(
             ValuationSnapshot(
                 account_id=row.account_id,
+                item_id=row.item_id,
                 snapshot_date=row.snapshot_date,
                 value=row.value,
                 note=row.note or None,
@@ -234,15 +285,18 @@ def import_rows(
 
 
 def export_accounts(session: Session, path: Path) -> int:
+    """按「账户 + 类别子项」逐行导出。"""
     overviews = account_service.list_overviews(session, include_archived=True)
+    count = 0
     with path.open("w", encoding="utf-8-sig", newline="") as fp:
         writer = csv.writer(fp)
         writer.writerow(
             [
-                "id",
-                "name",
+                "account_id",
+                "account_name",
                 "side",
                 "side_label",
+                "item_name",
                 "category",
                 "category_label",
                 "currency",
@@ -252,23 +306,26 @@ def export_accounts(session: Session, path: Path) -> int:
                 "latest_date",
             ]
         )
-        for item in overviews:
-            writer.writerow(
-                [
-                    item.id,
-                    item.name,
-                    item.side,
-                    SIDE_LABELS.get(item.side, item.side),
-                    item.category,
-                    CATEGORY_LABELS.get(item.category, item.category),
-                    item.currency,
-                    item.note,
-                    "true" if item.archived else "false",
-                    f"{item.latest_value:.2f}" if item.latest_value is not None else "",
-                    item.latest_date.isoformat() if item.latest_date else "",
-                ]
-            )
-    return len(overviews)
+        for account in overviews:
+            for item in account.items:
+                writer.writerow(
+                    [
+                        account.id,
+                        account.name,
+                        account.side,
+                        SIDE_LABELS.get(account.side, account.side),
+                        item.name,
+                        item.category,
+                        item.category_label,
+                        item.currency,
+                        account.note,
+                        "true" if account.archived else "false",
+                        f"{item.latest_value:.2f}" if item.latest_value is not None else "",
+                        item.latest_date.isoformat() if item.latest_date else "",
+                    ]
+                )
+                count += 1
+    return count
 
 
 def export_snapshots(session: Session, path: Path) -> int:
@@ -278,6 +335,7 @@ def export_snapshots(session: Session, path: Path) -> int:
         writer.writerow(
             [
                 "account_name",
+                "item_name",
                 "side",
                 "category",
                 "snapshot_date",
@@ -290,6 +348,7 @@ def export_snapshots(session: Session, path: Path) -> int:
             writer.writerow(
                 [
                     row.account_name,
+                    row.item_name,
                     row.side,
                     row.category,
                     row.snapshot_date.isoformat(),

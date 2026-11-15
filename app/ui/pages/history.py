@@ -27,6 +27,7 @@ from app.services import analytics, snapshots as snapshot_service
 from app.services.analytics import Decomposition
 from app.services.snapshots import SnapshotRow
 from app.ui.common import (
+    align_headers,
     confirm,
     danger_button,
     make_table,
@@ -34,6 +35,7 @@ from app.ui.common import (
     selected_row,
     set_columns,
     show_error,
+    show_exception,
     show_warning,
     table_item,
 )
@@ -42,7 +44,7 @@ from app.ui.pages.base import BasePage
 from app.ui.styles import palette
 from app.utils.async_task import run_async
 from app.utils.dates import add_months
-from app.utils.money import fmt_money, fmt_signed_money
+from app.utils.money import fmt_money, fmt_signed_money, symbol_for
 
 
 class HistoryPage(BasePage):
@@ -102,8 +104,11 @@ class HistoryPage(BasePage):
         filters.addStretch(1)
         list_layout.addLayout(filters)
 
-        self.list_table = make_table(["日期", "账户", "方向", "类别", "估值", "备注"])
-        set_columns(self.list_table, [110, 190, 60, 100, 140, 250])
+        self.list_table = make_table(
+            ["日期", "账户", "子项", "方向", "类别", "估值", "备注"]
+        )
+        set_columns(self.list_table, [105, 160, 130, 56, 90, 130, 210])
+        align_headers(self.list_table, (5,))
         self.list_table.itemDoubleClicked.connect(lambda _item: self._edit_snapshot())
         list_layout.addWidget(self.list_table, 1)
 
@@ -183,9 +188,10 @@ class HistoryPage(BasePage):
         compare_layout.addWidget(summary_frame)
 
         self.compare_table = make_table(
-            ["账户", "方向", "类别", "期初估值", "期末估值", "变化额"]
+            ["账户", "子项", "方向", "类别", "期初估值", "期末估值", "变化额"]
         )
-        set_columns(self.compare_table, [210, 70, 110, 150, 150, 150])
+        set_columns(self.compare_table, [170, 130, 56, 90, 140, 140, 140])
+        align_headers(self.compare_table, (4, 5, 6))
         self.compare_table.horizontalHeader().setStretchLastSection(True)
         compare_layout.addWidget(self.compare_table, 1)
         splitter.addWidget(compare_group)
@@ -198,7 +204,7 @@ class HistoryPage(BasePage):
             with db.session_scope() as session:
                 accounts = account_service.list_overviews(session, include_archived=True)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "加载失败", str(exc))
+            show_exception(self, "加载失败", exc)
             return
         current = self.account_combo.currentData()
         self.account_combo.blockSignals(True)
@@ -270,9 +276,10 @@ class HistoryPage(BasePage):
             values = [
                 row.snapshot_date.strftime("%Y-%m-%d"),
                 row.account_name,
+                row.item_name,
                 row.side_label,
                 row.category_label,
-                fmt_money(row.value, self.symbol),
+                fmt_money(row.value, symbol_for(row.currency, self.symbol)),
                 row.note,
             ]
             for column, text in enumerate(values):
@@ -281,7 +288,7 @@ class HistoryPage(BasePage):
                     column,
                     table_item(
                         text,
-                        align_right=column == 4,
+                        align_right=column == 5,
                         user_data=row.id if column == 0 else None,
                     ),
                 )
@@ -310,7 +317,9 @@ class HistoryPage(BasePage):
             with db.session_scope() as session:
                 snapshot_service.update_snapshot(session, row.id, day, value, note)
 
-        dialog = SnapshotEditDialog(row, self.symbol, save, parent=self)
+        dialog = SnapshotEditDialog(
+            row, symbol_for(row.currency, self.symbol), save, parent=self
+        )
         if dialog.exec():
             self._query()
             self.data_changed.emit()
@@ -324,14 +333,14 @@ class HistoryPage(BasePage):
             self,
             "删除快照",
             f"确定删除 {row.account_name} 在 {row.snapshot_date.strftime('%Y-%m-%d')} "
-            f"的估值 {fmt_money(row.value, self.symbol)} 吗？",
+            f"的估值 {fmt_money(row.value, symbol_for(row.currency, self.symbol))} 吗？",
         ):
             return
         try:
             with db.session_scope() as session:
                 snapshot_service.delete_snapshot(session, row.id)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "删除失败", str(exc))
+            show_exception(self, "删除失败", exc)
             return
         self._query()
         self.data_changed.emit()
@@ -407,6 +416,7 @@ class HistoryPage(BasePage):
         for row_index, row in enumerate(result.rows):
             values_row = [
                 row.account_name,
+                row.item_name,
                 row.side_label,
                 row.category_label,
                 fmt_money(row.start_value, symbol),
@@ -417,7 +427,7 @@ class HistoryPage(BasePage):
                 self.compare_table.setItem(
                     row_index,
                     column,
-                    table_item(text, align_right=column in (3, 4, 5)),
+                    table_item(text, align_right=column in (4, 5, 6)),
                 )
         self.compare_hint.setText(
             f"共 {len(result.rows)} 个账户；按估值变化额降序排列。"

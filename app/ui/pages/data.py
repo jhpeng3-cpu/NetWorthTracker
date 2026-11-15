@@ -17,7 +17,13 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.db.engine import db
 from app.services import backup, csv_io
-from app.ui.common import primary_button, show_error, show_info, show_warning
+from app.ui.common import (
+    primary_button,
+    show_error,
+    show_exception,
+    show_info,
+    show_warning,
+)
 from app.ui.dialogs.import_dialog import ImportPreviewDialog
 from app.ui.pages.base import BasePage
 from app.ui.styles import palette
@@ -121,7 +127,7 @@ class DataPage(BasePage):
             with db.session_scope() as session:
                 count = csv_io.export_accounts(session, target)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "导出失败", str(exc))
+            show_exception(self, "导出失败", exc)
             return
         show_info(self, "导出完成", f"已导出 {count} 个账户到：\n{target}")
 
@@ -137,7 +143,7 @@ class DataPage(BasePage):
             with db.session_scope() as session:
                 count = csv_io.export_snapshots(session, target)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "导出失败", str(exc))
+            show_exception(self, "导出失败", exc)
             return
         show_info(self, "导出完成", f"已导出 {count} 条快照到：\n{target}")
 
@@ -150,7 +156,7 @@ class DataPage(BasePage):
             with db.session_scope() as session:
                 csv_io.validate_import_rows(session, rows)
         except Exception as exc:  # noqa: BLE001
-            show_error(self, "无法读取 CSV", str(exc))
+            show_exception(self, "无法读取 CSV", exc)
             return
 
         def do_import(policy: str, skip_invalid: bool):

@@ -1,10 +1,14 @@
-"""账户服务。"""
+"""账户服务：账户及其类别子项。
+
+一个账户可包含多个类别子项（如证券账户下的现金、股票、债券），
+估值快照按子项记录，账户金额为子项之和。
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
@@ -17,9 +21,11 @@ from app.db.models import (
     CURRENCY_LABELS,
     SIDE_LABELS,
     Account,
+    AccountItem,
     ValuationSnapshot,
 )
-from app.utils.exceptions import AppValidationError
+from app.services import quotes
+from app.utils.exceptions import AppError, AppValidationError
 
 
 class AccountValidationError(AppValidationError):
@@ -31,8 +37,44 @@ class DuplicateAccountName(AccountValidationError):
         super().__init__(f"账户名称 “{name}” 已存在（已归档账户也会占用名称），请换一个名称。")
 
 
-class AccountNotFound(LookupError):
+class AccountNotFound(AppError, LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class ItemInput:
+    """新增 / 编辑账户时提交的类别子项。id 为空表示新建。"""
+
+    name: str
+    category: str
+    id: Optional[int] = None
+    currency: Optional[str] = None
+    symbol: Optional[str] = None
+    market: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ItemOverview:
+    id: int
+    account_id: int
+    name: str
+    category: str
+    latest_value: Optional[Decimal]
+    latest_date: Optional[date]
+    currency: str = "CNY"
+    symbol: str = ""
+    market: str = ""
+    price: Optional[Decimal] = None
+    price_currency: str = ""
+    price_at: Optional[datetime] = None
+
+    @property
+    def category_label(self) -> str:
+        return CATEGORY_LABELS.get(self.category, self.category)
+
+    @property
+    def currency_label(self) -> str:
+        return CURRENCY_LABELS.get(self.currency, self.currency)
 
 
 @dataclass(frozen=True)
@@ -40,12 +82,12 @@ class AccountOverview:
     id: int
     name: str
     side: str
-    category: str
     currency: str
     note: str
     archived: bool
     latest_value: Optional[Decimal]
     latest_date: Optional[date]
+    items: List[ItemOverview] = field(default_factory=list)
 
     @property
     def side_label(self) -> str:
@@ -53,7 +95,11 @@ class AccountOverview:
 
     @property
     def category_label(self) -> str:
-        return CATEGORY_LABELS.get(self.category, self.category)
+        labels: List[str] = []
+        for item in self.items:
+            if item.category_label not in labels:
+                labels.append(item.category_label)
+        return "、".join(labels) if labels else "—"
 
     @property
     def display_name(self) -> str:
@@ -64,14 +110,23 @@ class AccountOverview:
     def currency_label(self) -> str:
         return CURRENCY_LABELS.get(self.currency, self.currency)
 
+    @property
+    def item_currencies(self) -> List[str]:
+        codes: List[str] = []
+        for item in self.items:
+            if item.currency not in codes:
+                codes.append(item.currency)
+        return codes
 
-def _clean_fields(
-    name: str,
-    side: str,
-    category: str,
-    currency: str,
-    note: str,
-) -> tuple:
+    @property
+    def display_currency(self) -> str:
+        codes = self.item_currencies
+        if len(codes) == 1:
+            return codes[0]
+        return "MIXED"
+
+
+def _clean_fields(name: str, side: str, currency: str, note: str) -> tuple:
     clean_name = (name or "").strip()
     if not clean_name:
         raise AccountValidationError("账户名称不能为空。")
@@ -79,15 +134,53 @@ def _clean_fields(
         raise AccountValidationError("账户名称不能超过 100 个字符。")
     if side not in CATEGORIES_BY_SIDE:
         raise AccountValidationError("账户方向必须是资产或负债。")
-    if category not in CATEGORIES_BY_SIDE[side]:
-        raise AccountValidationError("账户类别与资产/负债方向不匹配。")
     clean_currency = (currency or "CNY").strip().upper() or "CNY"
     if clean_currency not in CURRENCY_CODES:
         allowed = "、".join(
             f"{CURRENCY_LABELS[code]}（{code}）" for code in CURRENCY_CODES
         )
         raise AccountValidationError(f"币种仅支持：{allowed}。")
-    return clean_name, side, category, clean_currency, (note or "").strip() or None
+    return clean_name, side, clean_currency, (note or "").strip() or None
+
+
+def _clean_items(
+    side: str, items: Sequence[ItemInput], default_currency: str
+) -> List[ItemInput]:
+    cleaned: List[ItemInput] = []
+    seen = set()
+    for spec in items:
+        name = (spec.name or "").strip()
+        if not name:
+            raise AccountValidationError("类别子项名称不能为空。")
+        if len(name) > 100:
+            raise AccountValidationError("子项名称不能超过 100 个字符。")
+        if name in seen:
+            raise AccountValidationError(f"子项名称 “{name}” 重复。")
+        seen.add(name)
+        if spec.category not in CATEGORIES_BY_SIDE[side]:
+            raise AccountValidationError("子项类别与资产/负债方向不匹配。")
+        item_currency = (spec.currency or default_currency or "CNY").strip().upper()
+        if item_currency not in CURRENCY_CODES:
+            allowed = "、".join(
+                f"{CURRENCY_LABELS[code]}（{code}）" for code in CURRENCY_CODES
+            )
+            raise AccountValidationError(f"子项币种仅支持：{allowed}。")
+        symbol, market = quotes.normalize_symbol(
+            spec.symbol or "", spec.market or ""
+        )
+        cleaned.append(
+            ItemInput(
+                name=name,
+                category=spec.category,
+                id=spec.id,
+                currency=item_currency,
+                symbol=symbol or None,
+                market=market or None,
+            )
+        )
+    if not cleaned:
+        raise AccountValidationError("每个账户至少需要一个类别子项。")
+    return cleaned
 
 
 def _is_unique_violation(exc: IntegrityError) -> bool:
@@ -99,62 +192,84 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
 
 
 def list_overviews(session: Session, include_archived: bool = False) -> List[AccountOverview]:
+    account_stmt = select(Account).order_by(Account.name)
+    if not include_archived:
+        account_stmt = account_stmt.where(Account.archived.is_(False))
+    accounts = list(session.scalars(account_stmt))
+
     ranked = (
         select(
-            ValuationSnapshot.account_id.label("account_id"),
+            ValuationSnapshot.item_id.label("item_id"),
             ValuationSnapshot.value.label("value"),
             ValuationSnapshot.snapshot_date.label("snapshot_date"),
             func.row_number()
             .over(
-                partition_by=ValuationSnapshot.account_id,
+                partition_by=ValuationSnapshot.item_id,
                 order_by=ValuationSnapshot.snapshot_date.desc(),
             )
             .label("rn"),
         )
-        .subquery("ranked_snapshots")
+        .subquery("ranked_item_snapshots")
     )
-    stmt = (
+    item_rows = session.execute(
         select(
-            Account.id,
-            Account.name,
-            Account.side,
-            Account.category,
-            Account.currency,
-            Account.note,
-            Account.archived,
+            AccountItem.id,
+            AccountItem.account_id,
+            AccountItem.name,
+            AccountItem.category,
+            AccountItem.currency,
+            AccountItem.symbol,
+            AccountItem.market,
             ranked.c.value,
             ranked.c.snapshot_date,
         )
-        .outerjoin(ranked, and_(ranked.c.account_id == Account.id, ranked.c.rn == 1))
-        .order_by(Account.name)
-    )
-    if not include_archived:
-        stmt = stmt.where(Account.archived.is_(False))
+        .outerjoin(ranked, and_(ranked.c.item_id == AccountItem.id, ranked.c.rn == 1))
+        .order_by(AccountItem.account_id, AccountItem.sort_order, AccountItem.id)
+    ).all()
 
-    rows = session.execute(stmt).all()
-    result = [
-        AccountOverview(
-            id=row.id,
-            name=row.name,
-            side=row.side,
-            category=row.category,
-            currency=row.currency,
-            note=row.note or "",
-            archived=bool(row.archived),
-            latest_value=row.value,
-            latest_date=row.snapshot_date,
+    quote_map = quotes.latest_quotes(session)
+    items_by_account: Dict[int, List[ItemOverview]] = {}
+    for row in item_rows:
+        symbol = row.symbol or ""
+        market = row.market or ""
+        quote = quote_map.get((symbol, market)) if symbol else None
+        items_by_account.setdefault(row.account_id, []).append(
+            ItemOverview(
+                id=row.id,
+                account_id=row.account_id,
+                name=row.name,
+                category=row.category,
+                latest_value=row.value,
+                latest_date=row.snapshot_date,
+                currency=row.currency,
+                symbol=symbol,
+                market=market,
+                price=quote.price if quote else None,
+                price_currency=quote.currency if quote else "",
+                price_at=quote.quote_time if quote else None,
+            )
         )
-        for row in rows
-    ]
+
     side_order = {"asset": 0, "liability": 1}
-    category_order = {key: index for index, key in enumerate(CATEGORY_LABELS)}
-    result.sort(
-        key=lambda item: (
-            side_order.get(item.side, 9),
-            category_order.get(item.category, 99),
-            item.name,
+    result: List[AccountOverview] = []
+    for account in accounts:
+        items = items_by_account.get(account.id, [])
+        values = [item.latest_value for item in items if item.latest_value is not None]
+        dates = [item.latest_date for item in items if item.latest_date is not None]
+        result.append(
+            AccountOverview(
+                id=account.id,
+                name=account.name,
+                side=account.side,
+                currency=account.currency,
+                note=account.note or "",
+                archived=bool(account.archived),
+                latest_value=sum(values, Decimal("0.00")) if values else None,
+                latest_date=max(dates) if dates else None,
+                items=items,
+            )
         )
-    )
+    result.sort(key=lambda item: (side_order.get(item.side, 9), item.name))
     return result
 
 
@@ -165,30 +280,60 @@ def get_account(session: Session, account_id: int) -> Account:
     return account
 
 
+def get_item(session: Session, item_id: int) -> AccountItem:
+    item = session.get(AccountItem, item_id)
+    if item is None:
+        raise AccountNotFound("类别子项不存在，可能已被删除。")
+    return item
+
+
+def list_items(session: Session, account_id: int) -> List[AccountItem]:
+    return list(
+        session.scalars(
+            select(AccountItem)
+            .where(AccountItem.account_id == account_id)
+            .order_by(AccountItem.sort_order, AccountItem.id)
+        )
+    )
+
+
 def create_account(
     session: Session,
     name: str,
     side: str,
-    category: str,
+    items: Sequence[ItemInput],
     currency: str = "CNY",
     note: str = "",
 ) -> int:
-    clean = _clean_fields(name, side, category, currency, note)
+    clean_name, side, clean_currency, clean_note = _clean_fields(
+        name, side, currency, note
+    )
+    clean_items = _clean_items(side, items, clean_currency)
     account = Account(
-        name=clean[0],
-        side=clean[1],
-        category=clean[2],
-        currency=clean[3],
-        note=clean[4],
+        name=clean_name,
+        side=side,
+        currency=clean_currency,
+        note=clean_note,
         archived=False,
     )
+    account.items = [
+        AccountItem(
+            name=spec.name,
+            category=spec.category,
+            currency=spec.currency or clean_currency,
+            symbol=spec.symbol or None,
+            market=spec.market or None,
+            sort_order=index,
+        )
+        for index, spec in enumerate(clean_items)
+    ]
     session.add(account)
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
         if _is_unique_violation(exc):
-            raise DuplicateAccountName(clean[0]) from exc
+            raise DuplicateAccountName(clean_name) from exc
         raise
     return int(account.id)
 
@@ -198,24 +343,57 @@ def update_account(
     account_id: int,
     name: str,
     side: str,
-    category: str,
+    items: Sequence[ItemInput],
     currency: str = "CNY",
     note: str = "",
 ) -> None:
-    clean = _clean_fields(name, side, category, currency, note)
+    clean_name, side, clean_currency, clean_note = _clean_fields(
+        name, side, currency, note
+    )
+    clean_items = _clean_items(side, items, clean_currency)
     account = get_account(session, account_id)
-    account.name = clean[0]
-    account.side = clean[1]
-    account.category = clean[2]
-    account.currency = clean[3]
-    account.note = clean[4]
+    account.name = clean_name
+    account.side = side
+    account.currency = clean_currency
+    account.note = clean_note
+
+    existing = {item.id: item for item in account.items}
+    kept = set()
+    for index, spec in enumerate(clean_items):
+        current = existing.get(spec.id) if spec.id else None
+        if current is None:
+            account.items.append(
+                AccountItem(
+                    name=spec.name,
+                    category=spec.category,
+                    currency=spec.currency or clean_currency,
+                    symbol=spec.symbol or None,
+                    market=spec.market or None,
+                    sort_order=index,
+                )
+            )
+        else:
+            current.name = spec.name
+            current.category = spec.category
+            current.currency = spec.currency or current.currency
+            current.symbol = spec.symbol or None
+            current.market = spec.market or None
+            current.sort_order = index
+            kept.add(current.id)
+    for item_id, item in existing.items():
+        if item_id not in kept:
+            account.items.remove(item)
+
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
         if _is_unique_violation(exc):
-            raise DuplicateAccountName(clean[0]) from exc
+            raise DuplicateAccountName(clean_name) from exc
         raise
+    except ValueError as exc:  # 例如子项已被删除
+        session.rollback()
+        raise AccountValidationError("保存失败：子项状态已变化，请刷新后重试。") from exc
 
 
 def set_archived(session: Session, account_id: int, archived: bool) -> None:
@@ -235,7 +413,8 @@ def snapshot_count(session: Session, account_id: int) -> int:
         session.scalar(
             select(func.count())
             .select_from(ValuationSnapshot)
-            .where(ValuationSnapshot.account_id == account_id)
+            .join(AccountItem, AccountItem.id == ValuationSnapshot.item_id)
+            .where(AccountItem.account_id == account_id)
         )
         or 0
     )

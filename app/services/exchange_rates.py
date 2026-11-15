@@ -174,3 +174,18 @@ def latest_rates(session: Session) -> Dict[str, Tuple[date, Decimal]]:
         if code not in result:
             result[code] = (day, rate)
     return result
+
+
+def latest_lookup(session: Session) -> Callable[[str, date], Decimal]:
+    """以各币种最新一次汇率折算（忽略日期），接口与 build_rate_lookup 一致。
+
+    用于需要「统一按最新汇率」展示的实时金额；缺少汇率的币种按 1 处理。
+    """
+    rates = {code: rate for code, (_day, rate) in latest_rates(session).items()}
+
+    def lookup(code: str, _day: Optional[date] = None) -> Decimal:
+        if code == BASE_CURRENCY:
+            return Decimal("1")
+        return rates.get(code, Decimal("1"))
+
+    return lookup
