@@ -52,10 +52,11 @@ def setup_logging() -> None:
 
 
 def main() -> int:
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from app import __version__
-    from app.config import AppConfig
+    from app.config import AppConfig, bundle_dir
     from app.db.engine import db
     from app.db.migrate import run_migrations
     from app.ui.dialogs.db_config_dialog import DbConfigDialog
@@ -69,6 +70,23 @@ def main() -> int:
     app.setApplicationName("净资产管理")
     app.setOrganizationName("NetWorthTracker")
     app.setApplicationVersion(__version__)
+
+    icon_path = bundle_dir() / "app" / "ui" / "assets" / "app.ico"
+    if not getattr(sys, "frozen", False):
+        # 源码运行时优先使用项目根目录的图标，替换后无需重新转换
+        root_icon = Path(__file__).resolve().parent / "图标.png"
+        if root_icon.exists():
+            icon_path = root_icon
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "NetWorthTracker.App"
+            )
+        except (AttributeError, OSError):
+            pass
 
     config = AppConfig()
     app.setStyleSheet(build_stylesheet(config.theme))

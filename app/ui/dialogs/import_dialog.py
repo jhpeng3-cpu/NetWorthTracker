@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -22,6 +23,7 @@ from app.services.csv_io import (
     ImportRow,
 )
 from app.ui.common import (
+    align_headers,
     make_table,
     primary_button,
     set_columns,
@@ -73,6 +75,7 @@ class ImportPreviewDialog(QDialog):
 
         self.table = make_table(["行号", "账户", "日期", "估值", "备注", "状态"])
         set_columns(self.table, [60, 180, 110, 130, 220, 200])
+        align_headers(self.table, (3,))
         layout.addWidget(self.table, 1)
 
         options = QHBoxLayout()
@@ -128,6 +131,10 @@ class ImportPreviewDialog(QDialog):
                     item = QTableWidgetItem()
                     self.table.setItem(row_index, column, item)
                 item.setText(text)
+                if column == 3:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
                 if color is not None:
                     item.setForeground(QColor(color))
                 if row.value is not None and column == 3:

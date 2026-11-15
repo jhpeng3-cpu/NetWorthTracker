@@ -31,6 +31,7 @@ from app.db.models import (
 )
 from app.services import accounts as account_service
 from app.services import exchange_rates
+from app.services import interest as interest_service
 from app.services import profit
 from app.services import quotes
 from app.services import snapshots as snapshot_service
@@ -61,7 +62,16 @@ from app.utils.money import fmt_money, fmt_percent, symbol_for
 
 class AccountsPage(BasePage):
     ACCOUNT_HEADERS = ["名称", "估值(CNY)", "状态"]
-    ITEM_HEADERS = ["子项", "类别", "现价", "最新估值", "折合人民币", "盈亏额", "盈亏率"]
+    ITEM_HEADERS = [
+        "子项",
+        "类别",
+        "现价",
+        "最新估值",
+        "折合人民币",
+        "盈亏额",
+        "盈亏率",
+        "累计利息",
+    ]
 
     def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(config, parent)
@@ -71,6 +81,7 @@ class AccountsPage(BasePage):
         self._lookup = lambda _code, _day: 1
         self._rate_dates: Dict[str, date] = {}
         self._costs: Dict[int, CostSummary] = {}
+        self._interest: Dict[int, interest_service.InterestRow] = {}
         self._display_code = "CNY"
         self._build_ui()
         self.refresh()
@@ -205,8 +216,8 @@ class AccountsPage(BasePage):
         right_layout.addLayout(entry_row)
 
         self.items_table = make_table(self.ITEM_HEADERS)
-        set_columns(self.items_table, [110, 62, 82, 98, 100, 92, 62])
-        align_headers(self.items_table, (2, 3, 4, 5, 6))
+        set_columns(self.items_table, [110, 62, 82, 98, 100, 92, 62, 92])
+        align_headers(self.items_table, (2, 3, 4, 5, 6, 7))
         self.items_table.doubleClicked.connect(self._on_item_double_clicked)
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.itemSelectionChanged.connect(self._update_buttons)
@@ -258,6 +269,11 @@ class AccountsPage(BasePage):
                 self._costs = profit.cost_summaries(
                     session,
                     [item.id for overview in rows for item in overview.items],
+                )
+                self._interest = interest_service.totals_by_item(
+                    interest_service.interest_rows(
+                        session, include_archived=self.show_archived.isChecked()
+                    )
                 )
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "加载失败", exc)
@@ -540,8 +556,9 @@ class AccountsPage(BasePage):
             tooltip = ""
             if summary is not None:
                 avg = summary.avg_unit_cost
+                cost_symbol = symbol_for(summary.currency, self.symbol)
                 tooltip = (
-                    f"成本 {summary.currency} {summary.total_cost:,.2f}"
+                    f"成本 {cost_symbol}{summary.total_cost:,.2f}"
                     f" · {summary.lot_count} 个批次"
                     + (f" · 平均成本 {avg:,.4f}" if avg is not None else "")
                 )
@@ -550,7 +567,7 @@ class AccountsPage(BasePage):
                 )
                 if value_in_cost is not None:
                     pnl = value_in_cost - summary.total_cost
-                    pnl_text = fmt_money(pnl, summary.currency, show_sign=True)
+                    pnl_text = fmt_money(pnl, cost_symbol, show_sign=True)
                     if summary.total_cost > 0:
                         rate_text = fmt_percent(
                             pnl / summary.total_cost * Decimal("100"), show_sign=True
@@ -567,10 +584,23 @@ class AccountsPage(BasePage):
                 pnl_text,
                 rate_text,
             ]
+            interest = self._interest.get(item.id)
+            interest_text = "—"
+            interest_tooltip = ""
+            if account.side == SIDE_LIABILITY and interest is not None:
+                interest_text = fmt_money(interest.interest, symbol)
+                interest_tooltip = (
+                    f"年利率 {interest.rate}% · 自 {interest.start:%Y-%m-%d} 起"
+                    f" · 计息 {interest.days} 天"
+                    f" · 期末余额 {fmt_money(interest.balance, symbol)}"
+                )
+                if interest.missing_snapshot:
+                    interest_tooltip += " · 起始日早于首次估值，缺期初快照"
+            values.append(interest_text)
             for column, text in enumerate(values):
                 cell = table_item(
                     text,
-                    align_right=column in (2, 3, 4, 5, 6),
+                    align_right=column in (2, 3, 4, 5, 6, 7),
                     user_data=item.id if column == 0 else None,
                 )
                 if column == 2 and item.symbol:
@@ -588,6 +618,8 @@ class AccountsPage(BasePage):
                         )
                 elif column == 5 and tooltip:
                     cell.setToolTip(tooltip)
+                elif column == 7 and interest_tooltip:
+                    cell.setToolTip(interest_tooltip)
                 if account.archived:
                     cell.setForeground(colors["muted"])
                 self.items_table.setItem(row_index, column, cell)
@@ -738,6 +770,8 @@ class AccountsPage(BasePage):
                     category=str(spec.get("category") or ""),
                     currency=str(spec.get("currency") or "") or None,
                     symbol=str(spec.get("symbol") or "") or None,
+                    interest_rate=spec.get("interest_rate"),
+                    interest_start=spec.get("interest_start"),
                 )
             )
         return result
@@ -854,6 +888,8 @@ class AccountsPage(BasePage):
                 category=item.category,
                 currency=item.currency,
                 symbol=item.symbol or None,
+                interest_rate=item.interest_rate,
+                interest_start=item.interest_start,
             )
             for item in overview.items
         ]
@@ -870,7 +906,7 @@ class AccountsPage(BasePage):
         )
         if not dialog.exec():
             return
-        name, category, symbol = dialog.values()
+        name, category, symbol, interest_rate, interest_start = dialog.values()
         items = self._base_items(overview)
         items.append(
             ItemInput(
@@ -878,6 +914,8 @@ class AccountsPage(BasePage):
                 category=category,
                 currency=dialog.currency_value(),
                 symbol=symbol or None,
+                interest_rate=interest_rate,
+                interest_start=interest_start,
             )
         )
         self._save_items(overview, items)
@@ -921,10 +959,12 @@ class AccountsPage(BasePage):
             cost_currency=cost_currency,
             currency=current.currency,
             symbol=current.symbol,
+            interest_rate=current.interest_rate,
+            interest_start=current.interest_start,
         )
         if not dialog.exec():
             return
-        name, category, symbol = dialog.values()
+        name, category, symbol, interest_rate, interest_start = dialog.values()
         items = [
             ItemInput(
                 id=item.id,
@@ -939,6 +979,12 @@ class AccountsPage(BasePage):
                     symbol or None
                     if item.id == current.id
                     else (item.symbol or None)
+                ),
+                interest_rate=(
+                    interest_rate if item.id == current.id else item.interest_rate
+                ),
+                interest_start=(
+                    interest_start if item.id == current.id else item.interest_start
                 ),
             )
             for item in overview.items

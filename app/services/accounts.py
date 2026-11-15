@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Dict, List, Optional, Sequence
 
 from sqlalchemy import and_, func, select
@@ -51,6 +51,8 @@ class ItemInput:
     currency: Optional[str] = None
     symbol: Optional[str] = None
     market: Optional[str] = None
+    interest_rate: Optional[Decimal] = None
+    interest_start: Optional[date] = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class ItemOverview:
     price: Optional[Decimal] = None
     price_currency: str = ""
     price_at: Optional[datetime] = None
+    interest_rate: Optional[Decimal] = None
+    interest_start: Optional[date] = None
 
     @property
     def category_label(self) -> str:
@@ -143,6 +147,30 @@ def _clean_fields(name: str, side: str, currency: str, note: str) -> tuple:
     return clean_name, side, clean_currency, (note or "").strip() or None
 
 
+def _clean_interest(
+    side: str, rate: Optional[Decimal], start: Optional[date]
+) -> tuple:
+    """负债子项的年利率与计息起始日；资产子项忽略这两个字段。"""
+    if side != "liability":
+        return None, None
+    if rate is None or str(rate).strip() == "":
+        if start is not None:
+            raise AccountValidationError("填写计息起始日前，请先填写年利率。")
+        return None, None
+    try:
+        value = Decimal(str(rate))
+    except (InvalidOperation, ValueError):
+        raise AccountValidationError("年利率必须是数字。") from None
+    if not value.is_finite():
+        raise AccountValidationError("年利率必须是有效数字。")
+    if value < 0 or value > 100:
+        raise AccountValidationError("年利率应在 0% 至 100% 之间。")
+    return (
+        value.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP),
+        start,
+    )
+
+
 def _clean_items(
     side: str, items: Sequence[ItemInput], default_currency: str
 ) -> List[ItemInput]:
@@ -168,6 +196,9 @@ def _clean_items(
         symbol, market = quotes.normalize_symbol(
             spec.symbol or "", spec.market or ""
         )
+        interest_rate, interest_start = _clean_interest(
+            side, spec.interest_rate, spec.interest_start
+        )
         cleaned.append(
             ItemInput(
                 name=name,
@@ -176,6 +207,8 @@ def _clean_items(
                 currency=item_currency,
                 symbol=symbol or None,
                 market=market or None,
+                interest_rate=interest_rate,
+                interest_start=interest_start,
             )
         )
     if not cleaned:
@@ -220,6 +253,8 @@ def list_overviews(session: Session, include_archived: bool = False) -> List[Acc
             AccountItem.currency,
             AccountItem.symbol,
             AccountItem.market,
+            AccountItem.interest_rate,
+            AccountItem.interest_start,
             ranked.c.value,
             ranked.c.snapshot_date,
         )
@@ -247,6 +282,8 @@ def list_overviews(session: Session, include_archived: bool = False) -> List[Acc
                 price=quote.price if quote else None,
                 price_currency=quote.currency if quote else "",
                 price_at=quote.quote_time if quote else None,
+                interest_rate=row.interest_rate,
+                interest_start=row.interest_start,
             )
         )
 
@@ -323,6 +360,8 @@ def create_account(
             currency=spec.currency or clean_currency,
             symbol=spec.symbol or None,
             market=spec.market or None,
+            interest_rate=spec.interest_rate,
+            interest_start=spec.interest_start,
             sort_order=index,
         )
         for index, spec in enumerate(clean_items)
@@ -369,6 +408,8 @@ def update_account(
                     currency=spec.currency or clean_currency,
                     symbol=spec.symbol or None,
                     market=spec.market or None,
+                    interest_rate=spec.interest_rate,
+                    interest_start=spec.interest_start,
                     sort_order=index,
                 )
             )
@@ -378,6 +419,8 @@ def update_account(
             current.currency = spec.currency or current.currency
             current.symbol = spec.symbol or None
             current.market = spec.market or None
+            current.interest_rate = spec.interest_rate
+            current.interest_start = spec.interest_start
             current.sort_order = index
             kept.add(current.id)
     for item_id, item in existing.items():

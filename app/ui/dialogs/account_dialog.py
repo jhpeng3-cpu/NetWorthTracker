@@ -136,6 +136,8 @@ class AccountDialog(QDialog):
         item_id: Optional[int] = None,
         currency: Optional[str] = None,
         symbol: Optional[str] = None,
+        interest_rate: Optional[object] = None,
+        interest_start: Optional[object] = None,
     ) -> None:
         row = self.items_table.rowCount()
         self.items_table.insertRow(row)
@@ -165,7 +167,15 @@ class AccountDialog(QDialog):
         symbol_edit.setPlaceholderText("可选")
         self.items_table.setCellWidget(row, 3, symbol_edit)
         self._item_rows.append(
-            (name_edit, currency_combo, category_combo, symbol_edit, item_id)
+            (
+                name_edit,
+                currency_combo,
+                category_combo,
+                symbol_edit,
+                item_id,
+                interest_rate,
+                interest_start,
+            )
         )
 
     def _remove_item_row(self) -> None:
@@ -199,7 +209,13 @@ class AccountDialog(QDialog):
         self.note_edit.setPlainText(account.note)
         for item in account.items:
             self._add_item_row(
-                item.name, item.category, item.id, item.currency, item.symbol
+                item.name,
+                item.category,
+                item.id,
+                item.currency,
+                item.symbol,
+                item.interest_rate,
+                item.interest_start,
             )
         if not account.items:
             self._add_item_row()
@@ -212,7 +228,15 @@ class AccountDialog(QDialog):
             return
 
         items = []
-        for name_edit, currency_combo, category_combo, symbol_edit, item_id in self._item_rows:
+        for (
+            name_edit,
+            currency_combo,
+            category_combo,
+            symbol_edit,
+            item_id,
+            interest_rate,
+            interest_start,
+        ) in self._item_rows:
             items.append(
                 {
                     "id": item_id,
@@ -220,6 +244,8 @@ class AccountDialog(QDialog):
                     "currency": currency_combo.currentData(),
                     "category": category_combo.currentData(),
                     "symbol": symbol_edit.text().strip().upper(),
+                    "interest_rate": interest_rate,
+                    "interest_start": interest_start,
                 }
             )
         if not items:

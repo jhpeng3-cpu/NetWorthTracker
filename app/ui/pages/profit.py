@@ -18,7 +18,7 @@ from app.config import AppConfig
 from app.db.engine import db
 from app.db.models import CATEGORY_LABELS
 from app.services import profit
-from app.services.profit import PeriodProfitRow, ProfitRow
+from app.services.profit import AccountProfitRow, PeriodProfitRow, ProfitRow
 from app.ui.common import (
     align_headers,
     make_table,
@@ -62,6 +62,18 @@ PERIOD_HEADERS = [
 
 PERIOD_WIDTHS = [120, 100, 50, 76, 110, 110, 110, 110, 110, 90, 120]
 
+ACCOUNT_HEADERS = [
+    "账户",
+    "方向",
+    "估值(CNY)",
+    "成本(CNY)",
+    "盈亏/利息",
+    "收益率",
+    "说明",
+]
+
+ACCOUNT_WIDTHS = [160, 50, 130, 130, 130, 80, 190]
+
 
 def _fmt_quantity(value: Decimal) -> str:
     text = f"{value:.4f}".rstrip("0").rstrip(".")
@@ -73,6 +85,7 @@ class ProfitPage(BasePage):
         super().__init__(config, parent)
         self._rows: List[ProfitRow] = []
         self._period_rows: List[PeriodProfitRow] = []
+        self._account_rows: List[AccountProfitRow] = []
         self._sort_column = 10
         self._sort_desc = True
         self._build_ui()
@@ -89,6 +102,12 @@ class ProfitPage(BasePage):
 
         filters = QHBoxLayout()
         filters.setSpacing(8)
+        dimension_label = QLabel("维度")
+        dimension_label.setObjectName("Hint")
+        self.dimension_combo = QComboBox()
+        self.dimension_combo.addItem("按子项", "item")
+        self.dimension_combo.addItem("按账户", "account")
+        self.dimension_combo.currentIndexChanged.connect(self._on_dimension_changed)
         side_label = QLabel("方向")
         side_label.setObjectName("Hint")
         self.side_combo = QComboBox()
@@ -120,6 +139,8 @@ class ProfitPage(BasePage):
         self.show_archived.toggled.connect(self.refresh)
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("Hint")
+        filters.addWidget(dimension_label)
+        filters.addWidget(self.dimension_combo)
         filters.addWidget(side_label)
         filters.addWidget(self.side_combo)
         filters.addWidget(category_label)
@@ -145,6 +166,20 @@ class ProfitPage(BasePage):
         self.root.addWidget(self.empty_label)
 
     # ---- 数据 ----
+
+    def _dimension(self) -> str:
+        return self.dimension_combo.currentData() or "item"
+
+    def _on_dimension_changed(self, _index: int) -> None:
+        is_account = self._dimension() == "account"
+        self.category_combo.setEnabled(not is_account)
+        if is_account and self.category_combo.currentIndex() != 0:
+            self.category_combo.blockSignals(True)
+            self.category_combo.setCurrentIndex(0)
+            self.category_combo.blockSignals(False)
+        self._sort_column = 4 if is_account else 10
+        self._sort_desc = True
+        self.refresh()
 
     def _on_period_changed(self, _index: int) -> None:
         mode = self.period_combo.currentData()
@@ -186,6 +221,13 @@ class ProfitPage(BasePage):
         return None
 
     def _apply_columns(self, period: bool) -> None:
+        if self._dimension() == "account":
+            self.table.setColumnCount(len(ACCOUNT_HEADERS))
+            self.table.setHorizontalHeaderLabels(ACCOUNT_HEADERS)
+            set_columns(self.table, ACCOUNT_WIDTHS)
+            align_headers(self.table, (2, 3, 4, 5))
+            return
+        self.table.setColumnCount(len(HEADERS))
         if period:
             self.table.setHorizontalHeaderLabels(PERIOD_HEADERS)
             set_columns(self.table, PERIOD_WIDTHS)
@@ -199,13 +241,26 @@ class ProfitPage(BasePage):
         if not db.is_configured:
             return
         period = self._period_range()
+        dimension = self._dimension()
+        account_summary = None
         try:
             with db.session_scope() as session:
-                if period is None:
+                if dimension == "account":
+                    rows: List[ProfitRow] = []
+                    period_rows: List[PeriodProfitRow] = []
+                    account_rows = profit.account_profit_rows(
+                        session,
+                        None if period is None else period[0],
+                        None if period is None else period[1],
+                        include_archived=self.show_archived.isChecked(),
+                    )
+                    account_summary = profit.account_profit_summary(account_rows)
+                elif period is None:
                     rows = profit.profit_rows(
                         session, include_archived=self.show_archived.isChecked()
                     )
-                    period_rows: List[PeriodProfitRow] = []
+                    period_rows = []
+                    account_rows = []
                     summary = profit.portfolio_summary(rows)
                 else:
                     start, end = period
@@ -216,6 +271,7 @@ class ProfitPage(BasePage):
                         end,
                         include_archived=self.show_archived.isChecked(),
                     )
+                    account_rows = []
                     summary = profit.period_summary(period_rows, start, end)
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "加载失败", exc)
@@ -232,12 +288,30 @@ class ProfitPage(BasePage):
             for row in period_rows
             if (not side or row.side == side) and (not category or row.category == category)
         ]
+        self._account_rows = [
+            row for row in account_rows if not side or row.side == side
+        ]
         self._apply_columns(period is not None)
         self._render()
-        if period is None:
+        if dimension == "account" and account_summary is not None:
+            self._set_account_summary(account_summary)
+        elif period is None:
             self._set_cumulative_summary(summary)
         else:
             self._set_period_summary(summary)
+
+    def _set_account_summary(self, summary: profit.AccountProfitSummary) -> None:
+        if not summary.account_count:
+            self.summary_label.setText("暂无账户盈亏")
+            return
+        text = (
+            f"{self._period_label()} · 投资收益 {fmt_money(summary.investment_cny, self.symbol, show_sign=True)}"
+            f" · 利息支出 {fmt_money(summary.interest_cny, self.symbol)}"
+            f" · 净收益 {fmt_money(summary.net_cny, self.symbol, show_sign=True)}"
+        )
+        if summary.missing:
+            text += f" · {summary.missing} 项缺估值或汇率"
+        self.summary_label.setText(text)
 
     def _set_cumulative_summary(self, summary: profit.PortfolioSummary) -> None:
         if not summary.item_count:
@@ -315,6 +389,9 @@ class ProfitPage(BasePage):
         return sorted(self._period_rows, key=key, reverse=self._sort_desc)
 
     def _render(self) -> None:
+        if self._dimension() == "account":
+            self._render_accounts()
+            return
         if self._period_rows or self._period_range() is not None:
             self._render_period()
             return
@@ -343,7 +420,7 @@ class ProfitPage(BasePage):
                 )
                 if column == 5:
                     item.setToolTip(
-                        f"成本币种 {row.cost_currency} · 成本合计 {row.cost_total:,.2f}"
+                        f"成本合计 {symbol}{row.cost_total:,.2f}"
                     )
                 self.table.setItem(row_index, column, item)
 
@@ -393,9 +470,8 @@ class ProfitPage(BasePage):
                     )
                 elif column == 8:
                     item.setToolTip(
-                        f"成本币种 {row.cost_currency}"
-                        f" · 期初成本 {row.start_cost:,.2f}"
-                        f" · 期末成本 {row.end_cost:,.2f}"
+                        f"期初成本 {cost_symbol}{row.start_cost:,.2f}"
+                        f" · 期末成本 {cost_symbol}{row.end_cost:,.2f}"
                     )
                 self.table.setItem(row_index, column, item)
 
@@ -411,8 +487,67 @@ class ProfitPage(BasePage):
             self._sort_desc = not self._sort_desc
         else:
             self._sort_column = column
-            self._sort_desc = column >= 4
+            self._sort_desc = column >= 2
         self._render()
+
+    def _sorted_account_rows(self) -> List[AccountProfitRow]:
+        keys = {
+            0: lambda row: row.account_name,
+            1: lambda row: row.side,
+            2: lambda row: row.value_cny or Decimal("-1e18"),
+            3: lambda row: row.cost_cny or Decimal("-1e18"),
+            4: lambda row: (
+                row.pnl_cny
+                if row.pnl_cny is not None
+                else Decimal("-1e18")
+            ),
+            5: lambda row: row.pnl_rate or Decimal("-1e18"),
+            6: lambda row: row.note,
+        }
+        key = keys.get(self._sort_column, keys[4])
+        return sorted(self._account_rows, key=key, reverse=self._sort_desc)
+
+    def _render_accounts(self) -> None:
+        rows = self._sorted_account_rows()
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            is_liability = row.side == "liability"
+            if is_liability:
+                pnl_text = fmt_money(
+                    -(row.interest_cny or Decimal("0.00")),
+                    self.symbol,
+                    show_sign=True,
+                )
+            else:
+                pnl_text = fmt_money(row.pnl_cny, self.symbol, show_sign=True)
+            values = [
+                row.account_name,
+                row.side_label,
+                fmt_money(row.value_cny, self.symbol),
+                fmt_money(row.cost_cny, self.symbol),
+                pnl_text,
+                fmt_percent(row.pnl_rate),
+                row.note,
+            ]
+            for column, text in enumerate(values):
+                item = table_item(
+                    text,
+                    align_right=column in (2, 3, 4, 5),
+                    user_data=row.account_id if column == 0 else None,
+                )
+                if column == 4:
+                    if is_liability:
+                        item.setToolTip(f"利息支出 {fmt_money(row.interest_cny, self.symbol)}")
+                    elif row.note:
+                        item.setToolTip(row.note)
+                self.table.setItem(row_index, column, item)
+
+        empty = len(rows) == 0
+        self.empty_label.setVisible(empty)
+        if empty:
+            self.empty_label.setText(
+                "暂无账户盈亏。资产账户需录入成本批次；负债账户需在子项中配置年利率。"
+            )
 
     # ---- 成本编辑 ----
 
@@ -437,6 +572,8 @@ class ProfitPage(BasePage):
         return None
 
     def _edit_costs(self) -> None:
+        if self._dimension() == "account":
+            return
         row = self._selected_row()
         if row is not None:
             self._open_cost_dialog(

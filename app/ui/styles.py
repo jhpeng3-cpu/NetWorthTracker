@@ -324,8 +324,8 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
     background: none;
 }
 QMenuBar {
-    background: $surface;
-    border-bottom: 1px solid $border;
+    background: $bg;
+    border: none;
 }
 QMenuBar::item {
     padding: 5px 10px;

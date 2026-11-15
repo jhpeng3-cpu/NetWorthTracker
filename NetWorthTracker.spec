@@ -51,6 +51,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="NetWorthTracker",
+    icon=str(project_dir / "app" / "ui" / "assets" / "app.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

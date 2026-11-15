@@ -18,12 +18,14 @@ from app.db.models import (
     CURRENCY_CODES,
     SIDE_ASSET,
     SIDE_LABELS,
+    SIDE_LIABILITY,
     AccountItem,
     PositionLot,
 )
 from app.services import accounts as account_service
 from app.services import analytics
 from app.services import exchange_rates
+from app.services import interest as interest_service
 from app.utils.exceptions import AppValidationError
 from app.utils.money import ratio, to_money
 
@@ -103,6 +105,38 @@ class PortfolioSummary:
     pnl_rate: Optional[Decimal]
     item_count: int
     missing_rate: int
+
+
+@dataclass(frozen=True)
+class AccountProfitRow:
+    """账户级盈亏：资产为投资收益，负债为利息支出。"""
+
+    account_id: int
+    account_name: str
+    side: str
+    currency: str
+    value_cny: Optional[Decimal]
+    cost_cny: Optional[Decimal]
+    pnl_cny: Optional[Decimal]
+    pnl_rate: Optional[Decimal]
+    interest_cny: Optional[Decimal]
+    item_count: int
+    note: str = ""
+
+    @property
+    def side_label(self) -> str:
+        return SIDE_LABELS.get(self.side, self.side)
+
+
+@dataclass(frozen=True)
+class AccountProfitSummary:
+    investment_cny: Decimal
+    interest_cny: Decimal
+    net_cny: Decimal
+    value_cny: Decimal
+    cost_cny: Decimal
+    account_count: int
+    missing: int
 
 
 def _check_currency(currency: str) -> str:
@@ -558,4 +592,165 @@ def period_summary(
         pnl_rate=ratio(pnl, cost) if cost > 0 else None,
         item_count=len(rows),
         missing_rate=missing,
+    )
+
+
+def account_profit_rows(
+    session: Session,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    include_archived: bool = False,
+    today: Optional[date] = None,
+) -> List[AccountProfitRow]:
+    """按账户汇总：资产账户为投资收益，负债账户为计息支出。
+
+    start 为空表示累计口径；否则统计 [start, end] 区间。
+    """
+    day = today or date.today()
+    overviews = account_service.list_overviews(
+        session, include_archived=include_archived
+    )
+    meta = {account.id: account for account in overviews}
+    buckets: Dict[int, Dict[str, Decimal]] = {
+        account.id: {
+            "value": Decimal("0.00"),
+            "cost": Decimal("0.00"),
+            "pnl": Decimal("0.00"),
+            "interest": Decimal("0.00"),
+            "items": Decimal("0"),
+            "missing": Decimal("0"),
+        }
+        for account in overviews
+    }
+
+    if start is None:
+        asset_rows = profit_rows(session, include_archived=include_archived, today=day)
+        interest_rows = interest_service.interest_rows(
+            session, None, day, include_archived=include_archived, today=day
+        )
+    else:
+        asset_rows = period_profit_rows(
+            session, start, end or day, include_archived=include_archived, today=day
+        )
+        interest_rows = interest_service.interest_rows(
+            session, start, end or day, include_archived=include_archived, today=day
+        )
+
+    for row in asset_rows:
+        bucket = buckets.get(row.account_id)
+        if bucket is None:
+            continue
+        bucket["items"] += 1
+        if start is None:
+            value, cost, pnl = row.value_cny, row.cost_cny, row.pnl_cny
+        else:
+            value, cost, pnl = row.end_value_cny, row.start_cost_cny, row.pnl_cny
+        if value is None or cost is None or pnl is None:
+            bucket["missing"] += 1
+            continue
+        bucket["value"] += value
+        bucket["cost"] += cost
+        bucket["pnl"] += pnl
+
+    interest_by_account: Dict[int, List[interest_service.InterestRow]] = {}
+    for row in interest_rows:
+        bucket = buckets.get(row.account_id)
+        if bucket is None:
+            continue
+        if row.interest_cny is None:
+            bucket["missing"] += 1
+            continue
+        bucket["interest"] += row.interest_cny
+        bucket["items"] += 1
+        interest_by_account.setdefault(row.account_id, []).append(row)
+
+    result: List[AccountProfitRow] = []
+    for account_id, bucket in buckets.items():
+        account = meta[account_id]
+        if bucket["items"] == 0:
+            continue
+        if account.side == SIDE_LIABILITY:
+            interest = to_money(bucket["interest"])
+            details = interest_by_account.get(account_id, [])
+            if len(details) == 1:
+                detail = details[0]
+                note = f"年利率 {detail.rate}%"
+                if detail.start:
+                    note += f" · 自 {detail.start:%Y-%m-%d}"
+                if detail.missing_snapshot:
+                    note += " · 缺期初快照"
+            else:
+                note = f"{len(details)} 项计息"
+            result.append(
+                AccountProfitRow(
+                    account_id=account_id,
+                    account_name=account.name,
+                    side=account.side,
+                    currency=account.display_currency,
+                    value_cny=None,
+                    cost_cny=None,
+                    pnl_cny=-interest,
+                    pnl_rate=None,
+                    interest_cny=interest,
+                    item_count=int(bucket["items"]),
+                    note=note,
+                )
+            )
+            continue
+        value = to_money(bucket["value"])
+        cost = to_money(bucket["cost"])
+        pnl = to_money(bucket["pnl"])
+        note = f"{int(bucket['missing'])} 项缺估值或汇率" if bucket["missing"] else ""
+        result.append(
+            AccountProfitRow(
+                account_id=account_id,
+                account_name=account.name,
+                side=account.side,
+                currency=account.display_currency,
+                value_cny=value,
+                cost_cny=cost,
+                pnl_cny=pnl,
+                pnl_rate=ratio(pnl, cost) if cost > 0 else None,
+                interest_cny=None,
+                item_count=int(bucket["items"]),
+                note=note,
+            )
+        )
+    result.sort(
+        key=lambda row: (
+            row.side == SIDE_LIABILITY,
+            -(row.interest_cny if row.side == SIDE_LIABILITY else (row.pnl_cny or Decimal("0"))),
+        )
+    )
+    return result
+
+
+def account_profit_summary(
+    rows: Sequence[AccountProfitRow],
+) -> AccountProfitSummary:
+    """账户级汇总：净收益 = 投资收益 − 利息支出。"""
+    investment = Decimal("0.00")
+    interest = Decimal("0.00")
+    value = Decimal("0.00")
+    cost = Decimal("0.00")
+    missing = 0
+    for row in rows:
+        if row.side == SIDE_LIABILITY:
+            if row.interest_cny is not None:
+                interest += row.interest_cny
+            continue
+        if row.pnl_cny is None or row.cost_cny is None or row.value_cny is None:
+            missing += 1
+            continue
+        investment += row.pnl_cny
+        value += row.value_cny
+        cost += row.cost_cny
+    return AccountProfitSummary(
+        investment_cny=to_money(investment),
+        interest_cny=to_money(interest),
+        net_cny=to_money(investment - interest),
+        value_cny=to_money(value),
+        cost_cny=to_money(cost),
+        account_count=len(rows),
+        missing=missing,
     )

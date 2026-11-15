@@ -8,7 +8,9 @@ from typing import List, Optional
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QGroupBox,
@@ -24,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from app.db.models import CATEGORY_LABELS, CATEGORIES_BY_SIDE, CURRENCY_CODES, CURRENCY_LABELS
 from app.services.profit import LotInput
-from app.ui.common import make_table, primary_button, set_columns, show_warning
+from app.ui.common import align_headers, make_table, primary_button, set_columns, show_warning
 from app.utils.money import fmt_money, parse_amount
 
 LOT_HEADERS = ["买入日期", "数量", "单价", "手续费", "备注"]
@@ -49,6 +51,8 @@ class ItemDialog(QDialog):
         cost_currency: str = "CNY",
         currency: str = "CNY",
         symbol: str = "",
+        interest_rate: Optional[Decimal] = None,
+        interest_start: Optional[date] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -97,6 +101,32 @@ class ItemDialog(QDialog):
                     self._update_symbol_visibility
                 )
                 self._update_symbol_visibility()
+            else:
+                self.rate_edit = QLineEdit()
+                self.rate_edit.setPlaceholderText("如 4.25；留空表示不计息")
+                if interest_rate is not None:
+                    self.rate_edit.setText(_fmt_number(interest_rate, 3))
+                self.start_check = QCheckBox("自")
+                default_day = interest_start or date.today()
+                self.start_edit = QDateEdit(
+                    QDate(default_day.year, default_day.month, default_day.day)
+                )
+                self.start_edit.setCalendarPopup(True)
+                self.start_edit.setDisplayFormat("yyyy-MM-dd")
+                self.start_check.setChecked(interest_start is not None)
+                self.start_edit.setEnabled(interest_start is not None)
+                self.start_check.toggled.connect(self.start_edit.setEnabled)
+                start_row = QWidget()
+                start_layout = QHBoxLayout(start_row)
+                start_layout.setContentsMargins(0, 0, 0, 0)
+                start_layout.setSpacing(6)
+                start_layout.addWidget(self.start_check)
+                start_layout.addWidget(self.start_edit, 1)
+                start_hint = QLabel("留空则从首次估值起算")
+                start_hint.setObjectName("Hint")
+                start_layout.addWidget(start_hint)
+                form.addRow("年利率(%)", self.rate_edit)
+                form.addRow("计息起始日", start_row)
             layout.addLayout(form)
 
         if allow_lots:
@@ -144,6 +174,7 @@ class ItemDialog(QDialog):
 
         self.lots_table = make_table(LOT_HEADERS, stretch_last=True)
         set_columns(self.lots_table, [130, 110, 110, 100, 240])
+        align_headers(self.lots_table, (1, 2, 3))
         self.lots_table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
@@ -277,20 +308,51 @@ class ItemDialog(QDialog):
 
     # ---- 提交 ----
 
+    def interest_values(self) -> tuple:
+        """负债子项的年利率与计息起始日；未填写时均为 None。"""
+        if not hasattr(self, "rate_edit"):
+            return None, None
+        text = self.rate_edit.text().strip().replace("%", "").replace("％", "")
+        day = None
+        if self.start_check.isChecked():
+            value = self.start_edit.date()
+            day = date(value.year(), value.month(), value.day())
+        if not text:
+            if day is not None:
+                raise ValueError("填写计息起始日前，请先填写年利率。")
+            return None, None
+        try:
+            rate = Decimal(text)
+        except (ArithmeticError, ValueError):
+            raise ValueError("年利率必须是数字。") from None
+        if rate < 0 or rate > 100:
+            raise ValueError("年利率应在 0% 至 100% 之间。")
+        return rate, day
+
     def values(self) -> tuple:
+        rate, start = self.interest_values()
         return (
             self.name_edit.text().strip(),
             self.category_combo.currentData(),
             self.symbol_value(),
+            rate,
+            start,
         )
 
     def _submit(self) -> None:
         if not self.lots_only:
-            name, _category, _symbol = self.values()
+            name, _category, _symbol, _rate, _start = self.values()
             if not name:
                 show_warning(self, "请填写名称", "子项名称不能为空。")
                 self.name_edit.setFocus()
                 return
+            if hasattr(self, "rate_edit"):
+                try:
+                    self.interest_values()
+                except ValueError as exc:
+                    show_warning(self, "利率有误", str(exc))
+                    self.rate_edit.setFocus()
+                    return
         if self.allow_lots:
             try:
                 self.lot_values()

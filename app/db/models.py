@@ -116,6 +116,8 @@ class AccountItem(Base):
     )
     symbol: Mapped[Optional[str]] = mapped_column(String(32))
     market: Mapped[Optional[str]] = mapped_column(String(8))
+    interest_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
+    interest_start: Mapped[Optional[date]] = mapped_column(Date)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
@@ -139,6 +141,10 @@ class AccountItem(Base):
             "category IN ('fixed_asset','cash','stock','bond','fund','other_asset',"
             "'short_term_debt','long_term_debt','other_liability')",
             name="ck_item_category",
+        ),
+        CheckConstraint(
+            "interest_rate IS NULL OR (interest_rate >= 0 AND interest_rate <= 100)",
+            name="ck_item_interest_rate",
         ),
         {
             "mysql_engine": "InnoDB",
