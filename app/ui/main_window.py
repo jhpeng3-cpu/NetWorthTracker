@@ -1,10 +1,8 @@
 """主窗口：侧边导航 + 页面栈。"""
 from __future__ import annotations
 
-import ctypes
-import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from PySide6.QtCore import QDateTime, QTime, QSize, QTimer, Qt
 from PySide6.QtWidgets import (
@@ -33,58 +31,13 @@ from app.ui.pages.data import DataPage
 from app.ui.pages.history import HistoryPage
 from app.ui.pages.profit import ProfitPage
 from app.ui.pages.settings import SettingsPage
-from app.ui.styles import build_stylesheet, palette
+from app.ui.styles import build_stylesheet
+from app.ui.titlebar import (
+    THEME_PROPERTY,
+    apply_titlebar_theme,
+    apply_titlebar_to_open_windows,
+)
 from app.utils.async_task import run_async
-
-# Windows 原生标题栏相关属性
-_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-_DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
-_DWMWA_BORDER_COLOR = 34
-_DWMWA_CAPTION_COLOR = 35
-_DWMWA_TEXT_COLOR = 36
-
-
-def _colorref(hex_color: str) -> int:
-    """把 #RRGGBB 转成 Windows COLORREF（0x00BBGGRR）。"""
-    value = hex_color.lstrip("#")
-    red, green, blue = (int(value[index : index + 2], 16) for index in (0, 2, 4))
-    return red | (green << 8) | (blue << 16)
-
-
-def apply_titlebar_theme(hwnd: int, theme: str) -> None:
-    """让 Windows 原生标题栏配色跟随应用主题。
-
-    Win10 1809+ 支持深色标题栏；Win11 起可自定义标题栏、文字与边框颜色，
-    不支持的属性会被系统忽略，因此无需区分版本。
-    """
-    if sys.platform != "win32" or not hwnd:
-        return
-    try:
-        dwmapi = ctypes.windll.dwmapi
-    except AttributeError:
-        return
-    colors = palette(theme)
-    dark = ctypes.c_int(1 if theme == "dark" else 0)
-    for attribute in (
-        _DWMWA_USE_IMMERSIVE_DARK_MODE,
-        _DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
-    ):
-        if (
-            dwmapi.DwmSetWindowAttribute(
-                hwnd, attribute, ctypes.byref(dark), ctypes.sizeof(dark)
-            )
-            == 0
-        ):
-            break
-    for attribute, color in (
-        (_DWMWA_CAPTION_COLOR, colors["bg"]),
-        (_DWMWA_TEXT_COLOR, colors["text"]),
-        (_DWMWA_BORDER_COLOR, colors["border"]),
-    ):
-        value = ctypes.c_int(_colorref(color))
-        dwmapi.DwmSetWindowAttribute(
-            hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
-        )
 
 
 class MainWindow(QMainWindow):
@@ -247,10 +200,11 @@ class MainWindow(QMainWindow):
         self._theme = theme
         app = QApplication.instance()
         if app is not None:
+            app.setProperty(THEME_PROPERTY, theme)
             app.setStyleSheet(build_stylesheet(theme))
         for page in getattr(self, "_pages", []):
             page.apply_theme(theme)
-        apply_titlebar_theme(int(self.winId()), theme)
+        apply_titlebar_to_open_windows(theme)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().showEvent(event)

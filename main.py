@@ -62,6 +62,10 @@ def main() -> int:
     from app.ui.dialogs.db_config_dialog import DbConfigDialog
     from app.ui.main_window import MainWindow
     from app.ui.styles import build_stylesheet
+    from app.ui.titlebar import (
+        THEME_PROPERTY,
+        install_titlebar_theme_filter,
+    )
     from app.utils.exceptions import install_global_exception_handler
 
     setup_logging()
@@ -89,6 +93,8 @@ def main() -> int:
             pass
 
     config = AppConfig()
+    app.setProperty(THEME_PROPERTY, config.theme)
+    install_titlebar_theme_filter(app)
     app.setStyleSheet(build_stylesheet(config.theme))
 
     if not config.has_database_config():
