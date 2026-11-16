@@ -30,7 +30,7 @@ from app.ui.common import (
 from app.ui.dialogs.item_dialog import ItemDialog
 from app.ui.pages.base import BasePage
 from app.utils.dates import add_months, month_end
-from app.utils.money import fmt_money, fmt_percent, symbol_for
+from app.utils.money import fmt_money, fmt_number, fmt_percent, symbol_for
 
 HEADERS = [
     "账户",
@@ -87,11 +87,6 @@ ACCOUNT_HEADERS = [
 ]
 
 ACCOUNT_WIDTHS = [160, 50, 130, 130, 130, 80, 190]
-
-
-def _fmt_quantity(value: Decimal) -> str:
-    text = f"{value:.4f}".rstrip("0").rstrip(".")
-    return text or "0"
 
 
 class ProfitPage(BasePage):
@@ -443,7 +438,7 @@ class ProfitPage(BasePage):
                 row.item_name,
                 row.side_label,
                 row.category_label,
-                _fmt_quantity(row.quantity),
+                fmt_number(row.quantity, 4),
                 fmt_money(row.avg_unit_cost, symbol),
                 fmt_money(row.value, symbol_for(row.account_currency, self.symbol)),
                 fmt_money(row.cost_total, symbol),
@@ -644,20 +639,8 @@ class ProfitPage(BasePage):
             return
         try:
             with db.session_scope() as session:
-                stored = profit.list_lots(session, item_id)
-                lots = [
-                    profit.LotInput(
-                        trade_date=lot.trade_date,
-                        quantity=lot.quantity,
-                        unit_cost=lot.unit_cost,
-                        fee=lot.fee,
-                        currency=lot.currency,
-                        note=lot.note or "",
-                    )
-                    for lot in stored
-                ]
-                cost_currency = (
-                    stored[0].currency if stored else fallback_currency
+                lots, cost_currency = profit.load_lot_inputs(
+                    session, item_id, fallback_currency
                 )
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "读取成本失败", exc)

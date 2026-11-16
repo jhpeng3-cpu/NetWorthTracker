@@ -32,7 +32,7 @@ from app.db.models import (
     SIDE_LIABILITY,
 )
 from app.services.accounts import AccountOverview, AccountValidationError
-from app.ui.common import primary_button, show_exception, show_warning
+from app.ui.common import dialog_footer, show_exception, show_warning
 
 
 class AccountDialog(QDialog):
@@ -127,16 +127,10 @@ class AccountDialog(QDialog):
         layout.addWidget(hint)
 
         footer = QWidget(self)
-        footer_layout = QHBoxLayout(footer)
+        footer_layout = dialog_footer(self, self._submit)
         footer_layout.setContentsMargins(22, 10, 22, 16)
         footer_layout.setSpacing(8)
-        footer_layout.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = primary_button("保存")
-        save.clicked.connect(self._submit)
-        footer_layout.addWidget(cancel)
-        footer_layout.addWidget(save)
+        footer.setLayout(footer_layout)
         outer.addWidget(footer)
 
         if self._account is None:

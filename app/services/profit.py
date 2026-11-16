@@ -49,6 +49,18 @@ class LotInput:
     def total_cost(self) -> Decimal:
         return to_money(self.quantity * self.unit_cost + self.fee)
 
+    @classmethod
+    def from_record(cls, lot: PositionLot) -> "LotInput":
+        """把数据库中的成本批次转换为可编辑输入项。"""
+        return cls(
+            trade_date=lot.trade_date,
+            quantity=lot.quantity,
+            unit_cost=lot.unit_cost,
+            fee=lot.fee,
+            currency=lot.currency,
+            note=lot.note or "",
+        )
+
 
 @dataclass(frozen=True)
 class CostSummary:
@@ -207,6 +219,15 @@ def list_lots(session: Session, item_id: int) -> List[PositionLot]:
             .order_by(PositionLot.trade_date, PositionLot.id)
         ).scalars()
     )
+
+
+def load_lot_inputs(
+    session: Session, item_id: int, fallback_currency: str = "CNY"
+) -> Tuple[List[LotInput], str]:
+    """读取子项的成本批次与成本币种，供界面直接编辑。"""
+    stored = list_lots(session, item_id)
+    currency = stored[0].currency if stored else fallback_currency
+    return [LotInput.from_record(lot) for lot in stored], currency
 
 
 def cost_summaries(

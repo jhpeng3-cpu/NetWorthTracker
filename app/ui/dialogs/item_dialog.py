@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -19,10 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QScrollArea,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -45,9 +41,15 @@ from app.db.models import (
 )
 from app.services import quotes
 from app.services.profit import LotInput
-from app.ui.common import align_headers, make_table, primary_button, set_columns, show_warning
+from app.ui.common import (
+    date_edit,
+    dialog_footer,
+    parse_optional_decimal,
+    show_warning,
+)
+from app.ui.widgets.lots_editor import LotsEditor
+from app.utils.money import fmt_number
 
-LOT_HEADERS = ["买入日期", "数量", "单价", "手续费", "备注"]
 MARKETS = [
     ("自动识别", ""),
     ("A 股 / 场内", "CN"),
@@ -61,19 +63,12 @@ MARKETS = [
 AUTO_UNITS = {"", "股", "份", "克", "千克", "桶", "吨", "百万英热"}
 
 
-def _fmt_number(value: Decimal, digits: int) -> str:
-    text = f"{value:.{digits}f}".rstrip("0").rstrip(".")
-    return text or "0"
-
-
 def _date_row(
     parent: QWidget, default_day: date, enabled: bool
 ) -> tuple:
     """返回（容器, 复选框, 日期编辑框）。"""
     check = QCheckBox("自")
-    edit = QDateEdit(QDate(default_day.year, default_day.month, default_day.day))
-    edit.setCalendarPopup(True)
-    edit.setDisplayFormat("yyyy-MM-dd")
+    edit = date_edit(default_day)
     check.setChecked(enabled)
     edit.setEnabled(enabled)
     check.toggled.connect(edit.setEnabled)
@@ -91,26 +86,6 @@ def _read_date(check: QCheckBox, edit: QDateEdit) -> Optional[date]:
         return None
     value = edit.date()
     return date(value.year(), value.month(), value.day())
-
-
-def _optional_decimal(
-    text: str,
-    field: str,
-    digits: str,
-    maximum: Optional[Decimal] = None,
-) -> Optional[Decimal]:
-    raw = (text or "").strip().replace(",", "").replace("％", "").replace("%", "")
-    if not raw:
-        return None
-    try:
-        value = Decimal(raw)
-    except (InvalidOperation, ValueError):
-        raise ValueError(f"{field}必须是数字。") from None
-    if not value.is_finite() or value < 0:
-        raise ValueError(f"{field}必须是非负数字。")
-    if maximum is not None and value > maximum:
-        raise ValueError(f"{field}不能大于 {maximum}。")
-    return value.quantize(Decimal(digits), rounding=ROUND_HALF_UP)
 
 
 class ItemDialog(QDialog):
@@ -213,7 +188,7 @@ class ItemDialog(QDialog):
                 self.rate_edit = QLineEdit()
                 self.rate_edit.setPlaceholderText("如 4.25；留空表示不计息")
                 if interest_rate is not None:
-                    self.rate_edit.setText(_fmt_number(interest_rate, 3))
+                    self.rate_edit.setText(fmt_number(interest_rate, 3))
                 start_row, self.start_check, self.start_edit = _date_row(
                     self, interest_start or date.today(), interest_start is not None
                 )
@@ -253,19 +228,12 @@ class ItemDialog(QDialog):
             layout.addWidget(self._build_lots_group(cost_currency, lots or []))
 
         footer = QWidget(self)
-        footer_layout = QHBoxLayout(footer)
+        footer_layout = dialog_footer(self, self._submit)
         footer_layout.setContentsMargins(22, 10, 22, 16)
         footer_layout.setSpacing(8)
-        footer_layout.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = primary_button("保存")
-        save.clicked.connect(self._submit)
-        footer_layout.addWidget(cancel)
-        footer_layout.addWidget(save)
+        footer.setLayout(footer_layout)
         outer.addWidget(footer)
 
-        self._refresh_totals()
         self._resize_for_screen(content)
 
     def _resize_for_screen(self, content: QWidget) -> None:
@@ -301,7 +269,7 @@ class ItemDialog(QDialog):
         self.quantity_edit = QLineEdit()
         self.quantity_edit.setPlaceholderText("数量 / 份额 / 克数")
         if quantity is not None:
-            self.quantity_edit.setText(_fmt_number(quantity, 4))
+            self.quantity_edit.setText(fmt_number(quantity, 4))
         self.unit_edit = QLineEdit()
         self.unit_edit.setPlaceholderText("股 / 份 / 克")
         self.unit_edit.setText(unit)
@@ -353,7 +321,7 @@ class ItemDialog(QDialog):
         self.rate_edit = QLineEdit()
         self.rate_edit.setPlaceholderText("如 4.25；留空表示不计息")
         if interest_rate is not None:
-            self.rate_edit.setText(_fmt_number(interest_rate, 3))
+            self.rate_edit.setText(fmt_number(interest_rate, 3))
         rate_row = QHBoxLayout()
         rate_row.addWidget(self.rate_edit, 1)
         rate_hint = QLabel("%/年")
@@ -380,7 +348,7 @@ class ItemDialog(QDialog):
         self.early_edit = QLineEdit()
         self.early_edit.setPlaceholderText("提前支取时适用的年利率（%）")
         if early_withdraw_rate is not None:
-            self.early_edit.setText(_fmt_number(early_withdraw_rate, 3))
+            self.early_edit.setText(fmt_number(early_withdraw_rate, 3))
         form.addRow("本金", self.principal_edit)
         form.addRow("面值", self.face_edit)
         form.addRow("年利率", rate_widget)
@@ -540,153 +508,15 @@ class ItemDialog(QDialog):
 
     def _build_lots_group(
         self, cost_currency: str, lots: List[LotInput]
-    ) -> QGroupBox:
-        group = QGroupBox("成本批次")
-        group_layout = QVBoxLayout(group)
-        group_layout.setContentsMargins(12, 14, 12, 10)
-        group_layout.setSpacing(8)
-
-        currency_row = QHBoxLayout()
-        currency_label = QLabel("成本币种")
-        currency_label.setObjectName("Hint")
-        self.cost_currency_combo = QComboBox()
-        self.cost_currency_combo.setFixedWidth(150)
-        for code in CURRENCY_CODES:
-            self.cost_currency_combo.addItem(f"{CURRENCY_LABELS[code]}（{code}）", code)
-        index = self.cost_currency_combo.findData(cost_currency)
-        if index >= 0:
-            self.cost_currency_combo.setCurrentIndex(index)
-        hint = QLabel("同一子项的所有批次必须使用同一种币种")
-        hint.setObjectName("Hint")
-        currency_row.addWidget(currency_label)
-        currency_row.addWidget(self.cost_currency_combo)
-        currency_row.addSpacing(8)
-        currency_row.addWidget(hint, 1)
-        group_layout.addLayout(currency_row)
-
-        self.lots_table = make_table(LOT_HEADERS, stretch_last=True)
-        set_columns(self.lots_table, [130, 110, 110, 100, 240])
-        self.lots_table.setMinimumHeight(170)
-        align_headers(self.lots_table, (1, 2, 3))
-        self.lots_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked
-            | QAbstractItemView.EditTrigger.SelectedClicked
-            | QAbstractItemView.EditTrigger.EditKeyPressed
-        )
-        self.lots_table.itemChanged.connect(lambda _item: self._refresh_totals())
-        group_layout.addWidget(self.lots_table, 1)
-
-        toolbar = QHBoxLayout()
-        add_button = QPushButton("添加批次")
-        add_button.clicked.connect(self._add_lot_row)
-        remove_button = QPushButton("删除选中")
-        remove_button.clicked.connect(self._remove_lot_row)
-        self.totals_label = QLabel("")
-        self.totals_label.setObjectName("Hint")
-        toolbar.addWidget(add_button)
-        toolbar.addWidget(remove_button)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self.totals_label)
-        group_layout.addLayout(toolbar)
-
-        for lot in lots:
-            self._append_lot_row(lot)
-        if not lots:
-            self._append_lot_row(None)
-        return group
-
-    def _append_lot_row(self, lot: Optional[LotInput]) -> None:
-        row = self.lots_table.rowCount()
-        self.lots_table.insertRow(row)
-        if lot is None:
-            values = ["", "", "", "0", ""]
-        else:
-            values = [
-                lot.trade_date.strftime("%Y-%m-%d"),
-                _fmt_number(lot.quantity, 4),
-                _fmt_number(lot.unit_cost, 6),
-                _fmt_number(lot.fee, 2),
-                lot.note,
-            ]
-        for column, text in enumerate(values):
-            item = QTableWidgetItem(text)
-            if column in (1, 2, 3):
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
-            self.lots_table.setItem(row, column, item)
-        self._refresh_totals()
-
-    def _add_lot_row(self) -> None:
-        self._append_lot_row(None)
-        self.lots_table.setCurrentCell(self.lots_table.rowCount() - 1, 0)
-
-    def _remove_lot_row(self) -> None:
-        row = self.lots_table.currentRow()
-        if row >= 0:
-            self.lots_table.removeRow(row)
-            self._refresh_totals()
-
-    def _read_lot_row(self, row: int) -> Optional[LotInput]:
-        def text(column: int) -> str:
-            item = self.lots_table.item(row, column)
-            return item.text().strip() if item else ""
-
-        if not any(text(column) for column in (0, 1, 2, 4)):
-            return None
-        day = QDate.fromString(text(0), "yyyy-MM-dd")
-        if not day.isValid():
-            raise ValueError(f"第 {row + 1} 行：买入日期格式应为 YYYY-MM-DD。")
-        quantity = _optional_decimal(text(1), f"第 {row + 1} 行数量", "0.0001")
-        unit_cost = _optional_decimal(text(2), f"第 {row + 1} 行单价", "0.000001")
-        fee = _optional_decimal(text(3) or "0", f"第 {row + 1} 行手续费", "0.01")
-        if quantity is None or quantity <= 0:
-            raise ValueError(f"第 {row + 1} 行数量必须大于 0。")
-        return LotInput(
-            trade_date=date(day.year(), day.month(), day.day()),
-            quantity=quantity,
-            unit_cost=unit_cost or Decimal("0"),
-            fee=fee or Decimal("0.00"),
-            currency=self.cost_currency_combo.currentData(),
-            note=text(4),
-        )
-
-    def _refresh_totals(self) -> None:
-        if not self.allow_lots or not hasattr(self, "totals_label"):
-            return
-        quantity = Decimal("0")
-        total = Decimal("0.00")
-        count = 0
-        for row in range(self.lots_table.rowCount()):
-            try:
-                lot = self._read_lot_row(row)
-            except ValueError:
-                continue
-            if lot is None:
-                continue
-            count += 1
-            quantity += lot.quantity
-            total += lot.total_cost
-        currency = (
-            self.cost_currency_combo.currentData()
-            if hasattr(self, "cost_currency_combo")
-            else "CNY"
-        )
-        self.totals_label.setText(
-            f"{count} 个批次 · 数量 {_fmt_number(quantity, 4)} · "
-            f"成本 {total:,.2f} {currency}"
-        )
+    ) -> LotsEditor:
+        self.lots_editor = LotsEditor(lots, cost_currency, self)
+        return self.lots_editor
 
     def lot_values(self) -> List[LotInput]:
-        lots: List[LotInput] = []
-        for row in range(self.lots_table.rowCount()):
-            lot = self._read_lot_row(row)
-            if lot is not None:
-                lots.append(lot)
-        return lots
+        return self.lots_editor.values()
 
     def cost_currency(self) -> str:
-        return self.cost_currency_combo.currentData()
+        return self.lots_editor.cost_currency()
 
     def currency_value(self) -> str:
         return self.currency_combo.currentData()
@@ -735,10 +565,10 @@ class ItemDialog(QDialog):
         unit = self.unit_edit.text().strip()
         if len(unit) > 8:
             raise ValueError("单位不能超过 8 个字符。")
-        quantity = _optional_decimal(self.quantity_edit.text(), "数量", "0.0001")
-        principal = _optional_decimal(self.principal_edit.text(), "本金", "0.01")
-        face_value = _optional_decimal(self.face_edit.text(), "面值", "0.01")
-        early_rate = _optional_decimal(
+        quantity = parse_optional_decimal(self.quantity_edit.text(), "数量", "0.0001")
+        principal = parse_optional_decimal(self.principal_edit.text(), "本金", "0.01")
+        face_value = parse_optional_decimal(self.face_edit.text(), "面值", "0.01")
+        early_rate = parse_optional_decimal(
             self.early_edit.text(), "提前支取利率", "0.001", Decimal("100")
         )
         return {

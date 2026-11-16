@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import configparser
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,7 @@ def config_path() -> Path:
 
 
 def user_data_dir() -> Path:
-    """用户数据目录；Windows 下优先使用 LOCALAPPDATA。"""
+    """旧版本默认数据目录；仅用于迁移历史数据库。"""
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
     if base:
         return Path(base) / APP_DIR_NAME
@@ -42,7 +43,28 @@ def user_data_dir() -> Path:
 
 
 def default_db_path() -> Path:
-    return user_data_dir() / DEFAULT_DB_FILENAME
+    """默认数据库文件，相对于应用目录。"""
+    return Path(DEFAULT_DB_FILENAME)
+
+
+def resolve_db_path(path: str | Path) -> Path:
+    """相对路径按应用目录解析，绝对路径原样返回。"""
+    target = Path(path).expanduser()
+    if target.is_absolute():
+        return target
+    return (app_dir() / target).resolve()
+
+
+def stored_db_path(path: str | Path) -> str:
+    """尽量以相对路径保存；只有位于应用目录之外时才保留绝对路径。"""
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        return target.as_posix()
+    try:
+        relative = target.resolve().relative_to(app_dir().resolve())
+    except ValueError:
+        return target.as_posix()
+    return relative.as_posix()
 
 
 @dataclass
@@ -50,7 +72,7 @@ class DbSettings:
     path: str = field(default_factory=lambda: str(default_db_path()))
 
     def resolved_path(self) -> Path:
-        return Path(self.path).expanduser()
+        return resolve_db_path(self.path)
 
     def is_complete(self) -> bool:
         return bool(self.path.strip())
@@ -64,11 +86,34 @@ class AppConfig:
         self.path = Path(path) if path else config_path()
         self._parser = configparser.ConfigParser(interpolation=None)
         self.reload()
+        self._adopt_legacy_database()
 
     def reload(self) -> None:
         self._parser = configparser.ConfigParser(interpolation=None)
         if self.path.exists():
             self._parser.read(self.path, encoding="utf-8")
+
+    def _adopt_legacy_database(self) -> None:
+        """旧版本数据库在用户数据目录，迁移到应用目录并改写为相对路径。"""
+        if self.path != config_path():
+            return  # 测试或自定义配置，不做迁移
+        legacy = user_data_dir() / DEFAULT_DB_FILENAME
+        raw = self._get("database", "path", "").strip()
+        if raw and Path(raw).expanduser() != legacy:
+            return  # 用户已指定其它位置
+        target = resolve_db_path(DEFAULT_DB_FILENAME)
+        if not target.exists() and legacy.exists():
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy, target)
+            except OSError:
+                return
+        if raw:
+            self._set("database", "path", DEFAULT_DB_FILENAME)
+            try:
+                self.save()
+            except OSError:
+                pass
 
     def _get(self, section: str, option: str, fallback: str = "") -> str:
         if not self._parser.has_section(section):
@@ -90,7 +135,7 @@ class AppConfig:
         return bool(self._get("database", "path", "").strip())
 
     def save_db_settings(self, settings: DbSettings) -> None:
-        self._set("database", "path", str(settings.resolved_path()))
+        self._set("database", "path", stored_db_path(settings.path))
         # 清理旧版本遗留的连接项（host/port/database/user/password）
         for legacy in ("host", "port", "database", "user", "password"):
             if self._parser.has_option("database", legacy):

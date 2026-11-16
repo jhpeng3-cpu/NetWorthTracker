@@ -1,9 +1,6 @@
 """以编程方式执行 Alembic 迁移（源码运行与 PyInstaller 打包均适用）。"""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL

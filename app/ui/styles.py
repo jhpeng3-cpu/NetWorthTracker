@@ -18,9 +18,12 @@ LIGHT = {
     "danger": "#dc2626",
     "warning": "#d97706",
     "selection": "#dbeafe",
-    "sidebar": "#152238",
-    "sidebar_text": "#c3cede",
-    "sidebar_muted": "#7f8ca1",
+    "sidebar": "#ffffff",
+    "sidebar_text": "#334155",
+    "sidebar_muted": "#64748b",
+    "sidebar_brand": "#0f172a",
+    "sidebar_hover": "#eef2f7",
+    "sidebar_border": "#e2e8f0",
     "chart_assets": "#2563eb",
     "chart_liabilities": "#dc2626",
     "chart_net": "#059669",
@@ -53,6 +56,9 @@ DARK = {
     "sidebar": "#0b1220",
     "sidebar_text": "#c3cede",
     "sidebar_muted": "#74829a",
+    "sidebar_brand": "#ffffff",
+    "sidebar_hover": "rgba(255, 255, 255, 20)",
+    "sidebar_border": "#1e293b",
     "chart_assets": "#60a5fa",
     "chart_liabilities": "#f87171",
     "chart_net": "#34d399",
@@ -87,9 +93,10 @@ QMainWindow, QWidget#Content, QWidget#Page, QDialog {
 QFrame#Sidebar {
     background: $sidebar;
     border: none;
+    border-right: 1px solid $sidebar_border;
 }
 QLabel#Brand {
-    color: #ffffff;
+    color: $sidebar_brand;
     font-size: 19px;
     font-weight: 700;
 }
@@ -114,7 +121,7 @@ QListWidget#Nav::item {
     margin: 2px 10px;
 }
 QListWidget#Nav::item:hover {
-    background: rgba(255, 255, 255, 20);
+    background: $sidebar_hover;
 }
 QListWidget#Nav::item:selected {
     background: $accent;

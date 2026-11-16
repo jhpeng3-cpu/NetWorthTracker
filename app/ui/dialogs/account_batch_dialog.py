@@ -4,29 +4,29 @@ from __future__ import annotations
 from datetime import date
 from typing import List, Optional
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QDateEdit,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from app.db.engine import db
-from app.db.models import CATEGORY_LABELS, SIDE_LABELS
+from app.db.models import CATEGORY_LABELS
 from app.services import snapshots as snapshot_service
 from app.services.snapshots import BatchConflictError, BatchEntry, BatchRow
 from app.ui.common import (
     align_headers,
+    date_edit,
+    dialog_footer,
     confirm,
+    from_qdate,
     make_table,
-    primary_button,
     set_columns,
     show_exception,
     show_warning,
@@ -67,10 +67,7 @@ class AccountBatchDialog(QDialog):
         controls = QHBoxLayout()
         date_label = QLabel("估值日期")
         date_label.setObjectName("Muted")
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit = date_edit()
         self.date_edit.setFixedWidth(130)
         self.date_edit.dateChanged.connect(lambda _value: self._load())
         controls.addWidget(date_label)
@@ -91,21 +88,12 @@ class AccountBatchDialog(QDialog):
         self.status_label.setObjectName("Hint")
         layout.addWidget(self.status_label)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = primary_button("保存全部")
-        save.clicked.connect(self._save)
-        buttons.addWidget(cancel)
-        buttons.addWidget(save)
-        layout.addLayout(buttons)
+        layout.addLayout(dialog_footer(self, self._save, save_text="保存全部"))
 
         self._load()
 
     def _selected_date(self) -> date:
-        qdate = self.date_edit.date()
-        return date(qdate.year(), qdate.month(), qdate.day())
+        return from_qdate(self.date_edit.date())
 
     def _load(self) -> None:
         day = self._selected_date()

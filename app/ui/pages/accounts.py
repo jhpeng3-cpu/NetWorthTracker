@@ -33,7 +33,6 @@ from app.services import accounts as account_service
 from app.services import exchange_rates
 from app.services import interest as interest_service
 from app.services import profit
-from app.services import quotes
 from app.services import snapshots as snapshot_service
 from app.services import valuation
 from app.services.accounts import AccountOverview, ItemInput, ItemOverview
@@ -56,7 +55,7 @@ from app.ui.dialogs.account_dialog import AccountDialog
 from app.ui.dialogs.item_dialog import ItemDialog
 from app.ui.dialogs.snapshot_entry_dialog import SnapshotEntryDialog
 from app.ui.pages.base import BasePage
-from app.ui.styles import palette
+from app.ui.widgets.rate_strip import RateStrip
 from app.utils.async_task import run_async
 from app.utils.money import fmt_money, fmt_percent, symbol_for
 
@@ -77,7 +76,6 @@ class AccountsPage(BasePage):
     def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(config, parent)
         self._rows: Dict[int, AccountOverview] = {}
-        self._theme = config.theme
         self._today = date.today()
         self._lookup = lambda _code, _day: 1
         self._rate_dates: Dict[str, date] = {}
@@ -113,10 +111,8 @@ class AccountsPage(BasePage):
         toolbar.addWidget(self.delete_button)
         toolbar.addWidget(self.show_archived)
         toolbar.addStretch(1)
-        self.rate_strip = QWidget()
-        self.rate_strip_layout = QHBoxLayout(self.rate_strip)
-        self.rate_strip_layout.setContentsMargins(0, 0, 0, 0)
-        self.rate_strip_layout.setSpacing(6)
+        self.rate_strip = RateStrip()
+        self.rate_strip.refresh_requested.connect(self._refresh_all)
         toolbar.addWidget(self.rate_strip)
         self.count_label = QLabel("")
         self.count_label.setObjectName("Hint")
@@ -296,77 +292,17 @@ class AccountsPage(BasePage):
         self._render_detail()
 
     def _render_rate_strip(self, rows: List[AccountOverview]) -> None:
-        """顶部汇率条：圆角卡片展示当前账户实际使用的非人民币币种。"""
-        while self.rate_strip_layout.count():
-            item = self.rate_strip_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        used: List[str] = []
-        for overview in rows:
-            for code in overview.item_currencies:
-                if code != "CNY" and code not in used:
-                    used.append(code)
-        if not used:
-            hint = QLabel("当前无外币账户")
-            hint.setObjectName("Hint")
-            self.rate_strip_layout.addWidget(hint)
-            self._append_rate_button()
-            return
-
-        caption = QLabel("当日汇率")
-        caption.setObjectName("Hint")
-        self.rate_strip_layout.addWidget(caption)
-
-        dates: List[date] = []
-        for code in CURRENCY_CODES:
-            if code not in used:
-                continue
-            known = code in self._rate_dates
-            chip = QFrame()
-            chip.setObjectName("RateChip")
-            chip_layout = QHBoxLayout(chip)
-            chip_layout.setContentsMargins(10, 4, 10, 4)
-            chip_layout.setSpacing(6)
-            code_label = QLabel(CURRENCY_LABELS.get(code, code))
-            code_label.setObjectName("RateCode")
-            value_label = QLabel(f"{self._lookup(code, self._today):.4f}" if known else "—")
-            value_label.setObjectName("RateValue")
-            chip_layout.addWidget(code_label)
-            chip_layout.addWidget(value_label)
-            if known:
-                dates.append(self._rate_dates[code])
-                chip.setToolTip(
-                    f"1 {CURRENCY_LABELS.get(code, code)} = "
-                    f"{self._lookup(code, self._today):.4f} 人民币\n"
-                    f"汇率日期：{self._rate_dates[code]:%Y-%m-%d}"
-                )
-            else:
-                chip.setToolTip("暂无该币种汇率，应用联网后会自动补全。")
-            self.rate_strip_layout.addWidget(chip)
-
-        note = QLabel(f"截至 {max(dates):%m-%d}" if dates else "暂无汇率")
-        note.setObjectName("Hint")
-        self.rate_strip_layout.addWidget(note)
-        self._append_rate_button()
-
-    def _append_rate_button(self) -> None:
-        self.refresh_rates_button = QPushButton("刷新行情")
-        self.refresh_rates_button.setToolTip(
-            "刷新汇率并按估值方式生成当日快照：行情自动、计息增值、手动估值"
+        """顶部汇率条：展示当前账户实际使用的非人民币币种。"""
+        currencies = [code for overview in rows for code in overview.item_currencies]
+        self.rate_strip.set_rates(
+            currencies, self._rate_dates, self._lookup, self._today
         )
-        self.refresh_rates_button.clicked.connect(self._refresh_all)
-        self.rate_strip_layout.addWidget(self.refresh_rates_button)
-        self.refresh_status = QLabel(self._last_refresh_note)
-        self.refresh_status.setObjectName("Hint")
-        self.rate_strip_layout.addWidget(self.refresh_status)
+        self.rate_strip.set_status(self._last_refresh_note)
 
     def _refresh_all(self) -> None:
         if not db.is_configured:
             return
-        self.refresh_rates_button.setEnabled(False)
-        self.refresh_rates_button.setText("刷新中…")
+        self.rate_strip.set_busy(True)
 
         def task():
             rate_error = ""
@@ -424,7 +360,7 @@ class AccountsPage(BasePage):
         self, table: QTableWidget, rows: List[AccountOverview]
     ) -> int:
         """填充账户表，返回内容所需高度（供分栏按比例分配）。"""
-        colors = palette(self._theme)
+        colors = self.colors
         symbol = symbol_for(self._display_code, self.symbol)
         table.blockSignals(True)
         table.setRowCount(len(rows))
@@ -554,7 +490,7 @@ class AccountsPage(BasePage):
         foreign = any(item.currency != "CNY" for item in account.items)
         self.items_table.setColumnHidden(4, not foreign)
 
-        colors = palette(self._theme)
+        colors = self.colors
         self.items_table.setRowCount(len(account.items))
         for row_index, item in enumerate(account.items):
             symbol = symbol_for(item.currency, self.symbol)
@@ -801,29 +737,18 @@ class AccountsPage(BasePage):
         result: List[ItemInput] = []
         for spec in payload.get("items") or []:
             base = existing.get(spec.get("id"))
-            result.append(
-                ItemInput(
-                    id=spec.get("id"),
-                    name=str(spec.get("name") or ""),
-                    category=str(spec.get("category") or ""),
-                    currency=str(spec.get("currency") or "") or None,
-                    symbol=str(spec.get("symbol") or "") or None,
-                    interest_rate=spec.get("interest_rate"),
-                    interest_start=spec.get("interest_start"),
-                    valuation_mode=base.valuation_mode if base else None,
-                    quantity=base.quantity if base else None,
-                    unit=base.unit if base else None,
-                    principal=base.principal if base else None,
-                    face_value=base.face_value if base else None,
-                    maturity_date=base.maturity_date if base else None,
-                    pay_frequency=base.pay_frequency if base else None,
-                    compounding=base.compounding if base else None,
-                    early_withdraw_rate=base.early_withdraw_rate if base else None,
-                    price_source=base.price_source if base else None,
-                    next_valuation=base.next_valuation if base else None,
-                    asset_meta=base.asset_meta if base else None,
-                )
+            overrides = dict(
+                name=str(spec.get("name") or ""),
+                category=str(spec.get("category") or ""),
+                currency=str(spec.get("currency") or "") or None,
+                symbol=str(spec.get("symbol") or "") or None,
+                interest_rate=spec.get("interest_rate"),
+                interest_start=spec.get("interest_start"),
             )
+            if base is None:
+                result.append(ItemInput(**overrides))
+            else:
+                result.append(ItemInput.from_overview(base, **overrides))
         return result
 
     def _after_change(self) -> None:
@@ -931,31 +856,7 @@ class AccountsPage(BasePage):
 
     @staticmethod
     def _base_items(overview: AccountOverview) -> List[ItemInput]:
-        return [
-            ItemInput(
-                id=item.id,
-                name=item.name,
-                category=item.category,
-                currency=item.currency,
-                symbol=item.symbol or None,
-                market=item.market or None,
-                interest_rate=item.interest_rate,
-                interest_start=item.interest_start,
-                valuation_mode=item.valuation_mode,
-                quantity=item.quantity,
-                unit=item.unit or None,
-                principal=item.principal,
-                face_value=item.face_value,
-                maturity_date=item.maturity_date,
-                pay_frequency=item.pay_frequency,
-                compounding=item.compounding,
-                early_withdraw_rate=item.early_withdraw_rate,
-                price_source=item.price_source or None,
-                next_valuation=item.next_valuation,
-                asset_meta=item.asset_meta,
-            )
-            for item in overview.items
-        ]
+        return [ItemInput.from_overview(item) for item in overview.items]
 
     def _add_item(self) -> None:
         overview = self._selected_account()
@@ -996,20 +897,9 @@ class AccountsPage(BasePage):
         if allow_lots:
             try:
                 with db.session_scope() as session:
-                    stored = profit.list_lots(session, current.id)
-                    lots = [
-                        profit.LotInput(
-                            trade_date=lot.trade_date,
-                            quantity=lot.quantity,
-                            unit_cost=lot.unit_cost,
-                            fee=lot.fee,
-                            currency=lot.currency,
-                            note=lot.note or "",
-                        )
-                        for lot in stored
-                    ]
-                    if stored:
-                        cost_currency = stored[0].currency
+                    lots, cost_currency = profit.load_lot_inputs(
+                        session, current.id, current.currency
+                    )
             except Exception as exc:  # noqa: BLE001
                 show_exception(self, "读取成本失败", exc)
                 return
@@ -1043,46 +933,21 @@ class AccountsPage(BasePage):
             return
         name, category, symbol, interest_rate, interest_start = dialog.values()
         valuation = dialog.valuation_values()
-        items: List[ItemInput] = []
-        for item in overview.items:
-            if item.id == current.id:
-                items.append(
-                    ItemInput(
-                        id=item.id,
-                        name=name,
-                        category=category,
-                        currency=dialog.currency_value(),
-                        symbol=symbol or None,
-                        interest_rate=interest_rate,
-                        interest_start=interest_start,
-                        **valuation,
-                    )
-                )
-            else:
-                items.append(
-                    ItemInput(
-                        id=item.id,
-                        name=item.name,
-                        category=item.category,
-                        currency=item.currency,
-                        symbol=item.symbol or None,
-                        market=item.market or None,
-                        interest_rate=item.interest_rate,
-                        interest_start=item.interest_start,
-                        valuation_mode=item.valuation_mode,
-                        quantity=item.quantity,
-                        unit=item.unit or None,
-                        principal=item.principal,
-                        face_value=item.face_value,
-                        maturity_date=item.maturity_date,
-                        pay_frequency=item.pay_frequency,
-                        compounding=item.compounding,
-                        early_withdraw_rate=item.early_withdraw_rate,
-                        price_source=item.price_source or None,
-                        next_valuation=item.next_valuation,
-                        asset_meta=item.asset_meta,
-                    )
-                )
+        overrides = dict(
+            name=name,
+            category=category,
+            currency=dialog.currency_value(),
+            symbol=symbol or None,
+            interest_rate=interest_rate,
+            interest_start=interest_start,
+            **valuation,
+        )
+        items = [
+            ItemInput.from_overview(item, **overrides)
+            if item.id == current.id
+            else ItemInput.from_overview(item)
+            for item in overview.items
+        ]
         try:
             with db.session_scope() as session:
                 account_service.update_account(
@@ -1108,19 +973,9 @@ class AccountsPage(BasePage):
             return
         try:
             with db.session_scope() as session:
-                stored = profit.list_lots(session, current.id)
-                cost_currency = stored[0].currency if stored else current.currency
-                lots = [
-                    profit.LotInput(
-                        trade_date=lot.trade_date,
-                        quantity=lot.quantity,
-                        unit_cost=lot.unit_cost,
-                        fee=lot.fee,
-                        currency=lot.currency,
-                        note=lot.note or "",
-                    )
-                    for lot in stored
-                ]
+                lots, cost_currency = profit.load_lot_inputs(
+                    session, current.id, current.currency
+                )
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "读取成本失败", exc)
             return
@@ -1162,5 +1017,5 @@ class AccountsPage(BasePage):
         self._save_items(overview, items)
 
     def apply_theme(self, theme: str) -> None:
-        self._theme = theme
+        super().apply_theme(theme)
         self.refresh()

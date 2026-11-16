@@ -23,7 +23,7 @@ from app.config import AppConfig
 from app.db.engine import db
 from app.services import backup, exchange_rates, valuation
 from app.services.valuation import manual as valuation_manual
-from app.ui.common import show_error, show_info
+from app.ui.common import show_info
 from app.ui.dialogs.db_config_dialog import DbConfigDialog
 from app.ui.pages.accounts import AccountsPage
 from app.ui.pages.base import BasePage

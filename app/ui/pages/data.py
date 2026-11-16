@@ -26,7 +26,6 @@ from app.ui.common import (
 )
 from app.ui.dialogs.import_dialog import ImportPreviewDialog
 from app.ui.pages.base import BasePage
-from app.ui.styles import palette
 from app.utils.async_task import run_async
 from datetime import date
 
@@ -34,7 +33,6 @@ from datetime import date
 class DataPage(BasePage):
     def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(config, parent)
-        self._theme = config.theme
         self._build_ui()
         self.refresh()
 
@@ -106,16 +104,16 @@ class DataPage(BasePage):
         path = self.config.db_settings().resolved_path()
         if not db.is_configured:
             self.dump_label.setText("数据库尚未就绪，暂时无法备份。")
-            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['danger']};")
+            self.dump_label.setStyleSheet(f"color: {self.colors['danger']};")
             self.backup_button.setEnabled(False)
             return
         if path.exists():
             self.dump_label.setText(f"当前数据库文件：{path}")
-            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['muted']};")
+            self.dump_label.setStyleSheet(f"color: {self.colors['muted']};")
             self.backup_button.setEnabled(True)
         else:
             self.dump_label.setText(f"数据库文件不存在：{path}")
-            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['danger']};")
+            self.dump_label.setStyleSheet(f"color: {self.colors['danger']};")
             self.backup_button.setEnabled(False)
 
     def _export_accounts(self) -> None:
@@ -206,16 +204,16 @@ class DataPage(BasePage):
 
     def _backup_success(self, result: object) -> None:
         self.backup_button.setEnabled(True)
-        self.backup_status.setStyleSheet(f"color: {palette(self._theme)['success']};")
+        self.backup_status.setStyleSheet(f"color: {self.colors['success']};")
         self.backup_status.setText(f"备份完成：{result}")
         show_info(self, "备份完成", f"数据库已备份到：\n{result}")
 
     def _backup_failure(self, message: str) -> None:
         self.backup_button.setEnabled(True)
-        self.backup_status.setStyleSheet(f"color: {palette(self._theme)['danger']};")
+        self.backup_status.setStyleSheet(f"color: {self.colors['danger']};")
         self.backup_status.setText("备份失败")
         show_error(self, "备份失败", message)
 
     def apply_theme(self, theme: str) -> None:
-        self._theme = theme
+        super().apply_theme(theme)
         self.refresh()

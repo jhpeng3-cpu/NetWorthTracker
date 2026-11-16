@@ -100,6 +100,12 @@ def fmt_percent(value: object, show_sign: bool = True, digits: int = 2) -> str:
     return f"{sign}{d:.{digits}f}%"
 
 
+def fmt_number(value: Decimal, digits: int = 4) -> str:
+    """去掉末尾多余的 0，用于把 Decimal 回填到输入框。"""
+    text = f"{Decimal(str(value)):.{digits}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def ratio(part: Decimal, total: Decimal) -> Decimal:
     """安全计算百分比数值（0-100），total 为 0 时返回 0。"""
     if total is None or total == 0:

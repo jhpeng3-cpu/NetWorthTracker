@@ -1,13 +1,16 @@
 """通用 UI 组件与辅助函数。"""
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Iterable, List, Optional
+from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Callable, Iterable, List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDateEdit,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -40,6 +43,40 @@ def primary_button(text: str) -> QPushButton:
     button = QPushButton(text)
     button.setProperty("primary", True)
     return button
+
+
+def to_qdate(day: date) -> QDate:
+    return QDate(day.year, day.month, day.day)
+
+
+def from_qdate(value: QDate) -> date:
+    return date(value.year(), value.month(), value.day())
+
+
+def date_edit(day: Optional[date] = None) -> QDateEdit:
+    """带日历弹窗的标准日期输入框。"""
+    edit = QDateEdit(to_qdate(day or date.today()))
+    edit.setCalendarPopup(True)
+    edit.setDisplayFormat("yyyy-MM-dd")
+    return edit
+
+
+def dialog_footer(
+    dialog: QDialog,
+    on_save: Callable[[], None],
+    save_text: str = "保存",
+    cancel_text: str = "取消",
+) -> QHBoxLayout:
+    """对话框底部的「取消 / 保存」按钮行。"""
+    row = QHBoxLayout()
+    row.addStretch(1)
+    cancel = QPushButton(cancel_text)
+    cancel.clicked.connect(dialog.reject)
+    save = primary_button(save_text)
+    save.clicked.connect(on_save)
+    row.addWidget(cancel)
+    row.addWidget(save)
+    return row
 
 
 def danger_button(text: str) -> QPushButton:
@@ -216,3 +253,24 @@ def money_text(value: Optional[Decimal], symbol: str, placeholder: str = "—") 
     from app.utils.money import fmt_money
 
     return fmt_money(value, symbol=symbol, placeholder=placeholder)
+
+
+def parse_optional_decimal(
+    text: str,
+    field: str,
+    digits: str,
+    maximum: Optional[Decimal] = None,
+) -> Optional[Decimal]:
+    """解析表单里的可选数字；空文本返回 None，非法值抛 ValueError。"""
+    raw = (text or "").strip().replace(",", "").replace("％", "").replace("%", "")
+    if not raw:
+        return None
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{field}必须是数字。") from None
+    if not value.is_finite() or value < 0:
+        raise ValueError(f"{field}必须是非负数字。")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{field}不能大于 {maximum}。")
+    return value.quantize(Decimal(digits), rounding=ROUND_HALF_UP)

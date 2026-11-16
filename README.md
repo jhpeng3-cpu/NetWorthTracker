@@ -56,10 +56,10 @@ NetWorthTracker/
 
 应用使用 **SQLite**，无需安装数据库服务：
 
-- 默认数据库文件：`%LOCALAPPDATA%\NetWorthTracker\networth.db`。
+- 默认数据库文件：应用目录下的 `networth.db`（相对路径，随程序目录一起移动）。
 - 首次启动会自动创建文件并执行 Alembic 迁移，无需配置账号密码。
 - 可在「设置 → 数据库文件」中更换为其它 `.db` 文件；文件不存在时会自动创建。
-- 若 `LOCALAPPDATA` 不可用，则回退到用户主目录下的 `.networthtracker/networth.db`。
+- 旧版本位于 `%LOCALAPPDATA%\NetWorthTracker\networth.db` 的数据库，首次启动会自动复制到应用目录并改写为相对路径。
 - 应用只管理自身业务表，不会修改或删除其它文件。
 
 ## 三、安装与运行
@@ -191,7 +191,7 @@ account_name,item_name,snapshot_date,value,note
 恢复方式：
 
 1. 关闭应用。
-2. 用备份文件覆盖当前数据库文件（默认位于 `%LOCALAPPDATA%\NetWorthTracker\networth.db`），或在「设置 → 数据库文件」中直接切换到备份文件。
+2. 用备份文件覆盖当前数据库文件（默认位于应用目录下的 `networth.db`），或在「设置 → 数据库文件」中直接切换到备份文件。
 3. 重新启动应用。
 
 「设置」中可开启启动时自动备份，并指定目录。自动备份失败只在状态栏提示，不阻塞启动。
@@ -214,10 +214,10 @@ dist\NetWorthTracker\NetWorthTracker.exe
 
 - 必须复制整个 `dist\NetWorthTracker` 目录，不能只拷 exe。
 - 目标机需 64 位 Windows；数据库为本地 SQLite 文件，无需安装数据库服务。
-- 放到可写目录（如 `D:\Apps\NetWorthTracker`），不要放 `Program Files`，因为 `config.ini`、`networth.log` 写在 exe 同目录。
+- 放到可写目录（不要放 `Program Files`），因为 `config.ini`、`networth.log`、`networth.db` 都写在 exe 同目录。
 - 首次运行自动创建数据库文件与表结构；需要联网才能获取汇率与股票行情。
 - 未签名 exe 首次运行可能被 SmartScreen 拦截，选择「更多信息 → 仍要运行」。
-- 迁移数据时直接复制 SQLite `.db` 文件即可（默认位于 `%LOCALAPPDATA%\NetWorthTracker\networth.db`）。
+- 迁移数据时直接复制 SQLite `.db` 文件即可（默认位于应用目录下的 `networth.db`）。
 - `alembic/`、`alembic.ini` 与界面资源通过 spec 的 `datas` 打包；`hiddenimports` 含 `logging.config` 等动态依赖。
 
 ## 九、常见问题

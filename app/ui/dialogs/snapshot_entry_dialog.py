@@ -1,25 +1,21 @@
 """新增估值录入对话框（账户管理内使用）。"""
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDateEdit,
     QDialog,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from app.ui.common import primary_button, show_warning
+from app.ui.common import date_edit, dialog_footer, from_qdate, show_warning
 from app.utils.money import AmountError, parse_amount
 
 
@@ -53,10 +49,7 @@ class SnapshotEntryDialog(QDialog):
         subtitle.setObjectName("Muted")
         layout.addWidget(subtitle)
 
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit = date_edit()
         self.value_edit = QLineEdit()
         self.value_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.value_edit.setPlaceholderText(f"{self._symbol}0.00")
@@ -78,20 +71,11 @@ class SnapshotEntryDialog(QDialog):
         hint.setObjectName("Hint")
         layout.addWidget(hint)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = primary_button("保存")
-        save.clicked.connect(self._submit)
-        buttons.addWidget(cancel)
-        buttons.addWidget(save)
-        layout.addLayout(buttons)
+        layout.addLayout(dialog_footer(self, self._submit))
 
     def values(self) -> tuple:
-        qdate = self.date_edit.date()
         return (
-            date(qdate.year(), qdate.month(), qdate.day()),
+            from_qdate(self.date_edit.date()),
             parse_amount(self.value_edit.text(), field="估值"),
             self.note_edit.toPlainText().strip(),
         )

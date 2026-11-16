@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, time
-from decimal import Decimal
 from typing import Optional
 
 from app.services.quotes.base import QuoteError, PricePoint, http_get, to_price

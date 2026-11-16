@@ -5,27 +5,26 @@ from datetime import date
 from decimal import Decimal
 from typing import Callable, Optional
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDateEdit,
     QDialog,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from app.services.snapshots import SnapshotExistsError, SnapshotRow, SnapshotValidationError
-from app.ui.common import primary_button, show_exception, show_warning
+from app.ui.common import (
+    date_edit,
+    dialog_footer,
+    from_qdate,
+    show_exception,
+    show_warning,
+)
 from app.utils.money import AmountError, fmt_money, parse_amount
-
-
-def to_qdate(day: date) -> QDate:
-    return QDate(day.year, day.month, day.day)
 
 
 class SnapshotEditDialog(QDialog):
@@ -55,10 +54,7 @@ class SnapshotEditDialog(QDialog):
         side_label.setObjectName("Muted")
         layout.addWidget(side_label)
 
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_edit.setDate(to_qdate(row.snapshot_date))
+        self.date_edit = date_edit(row.snapshot_date)
         self.value_edit = QLineEdit(f"{row.value:.2f}")
         self.value_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.note_edit = QTextEdit()
@@ -77,19 +73,10 @@ class SnapshotEditDialog(QDialog):
         hint.setObjectName("Hint")
         layout.addWidget(hint)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = primary_button("保存修改")
-        save.clicked.connect(self._submit)
-        buttons.addWidget(cancel)
-        buttons.addWidget(save)
-        layout.addLayout(buttons)
+        layout.addLayout(dialog_footer(self, self._submit, save_text="保存修改"))
 
     def _submit(self) -> None:
-        qdate = self.date_edit.date()
-        day = date(qdate.year(), qdate.month(), qdate.day())
+        day = from_qdate(self.date_edit.date())
         try:
             value = parse_amount(self.value_edit.text(), field="估值")
         except AmountError as exc:

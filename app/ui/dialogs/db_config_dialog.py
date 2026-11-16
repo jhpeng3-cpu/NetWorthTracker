@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import AppConfig, DbSettings, default_db_path
+from app.config import AppConfig, DbSettings, app_dir, default_db_path
 from app.db import engine as db_engine
 from app.db.migrate import run_migrations
 from app.ui.common import primary_button, show_warning
@@ -119,7 +119,7 @@ class DbConfigDialog(QDialog):
         self.path_edit.setText(self.config.db_settings().path)
 
     def _browse_existing(self) -> None:
-        start = self.path_edit.text().strip() or str(default_db_path().parent)
+        start = self.path_edit.text().strip() or str(app_dir())
         path, _ = QFileDialog.getOpenFileName(
             self, "选择 SQLite 数据库文件", start, "SQLite 数据库 (*.db *.sqlite);;所有文件 (*)"
         )
@@ -127,7 +127,7 @@ class DbConfigDialog(QDialog):
             self.path_edit.setText(path)
 
     def _browse_new(self) -> None:
-        start = self.path_edit.text().strip() or str(default_db_path())
+        start = self.path_edit.text().strip() or str(app_dir() / default_db_path())
         path, _ = QFileDialog.getSaveFileName(
             self, "新建 SQLite 数据库文件", start, "SQLite 数据库 (*.db)"
         )
@@ -145,7 +145,7 @@ class DbConfigDialog(QDialog):
         path = Path(raw).expanduser()
         if not path.suffix:
             path = path.with_suffix(".db")
-        return DbSettings(path=str(path.resolve()))
+        return DbSettings(path=str(path))
 
     def _set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy

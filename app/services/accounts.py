@@ -73,6 +73,34 @@ class ItemInput:
     next_valuation: Optional[date] = None
     asset_meta: Optional[dict] = None
 
+    @classmethod
+    def from_overview(cls, item: "ItemOverview", **overrides) -> "ItemInput":
+        """由现有的子项概览生成输入项，可覆盖部分字段。"""
+        fields = dict(
+            id=item.id,
+            name=item.name,
+            category=item.category,
+            currency=item.currency,
+            symbol=item.symbol or None,
+            market=item.market or None,
+            interest_rate=item.interest_rate,
+            interest_start=item.interest_start,
+            valuation_mode=item.valuation_mode,
+            quantity=item.quantity,
+            unit=item.unit or None,
+            principal=item.principal,
+            face_value=item.face_value,
+            maturity_date=item.maturity_date,
+            pay_frequency=item.pay_frequency,
+            compounding=item.compounding,
+            early_withdraw_rate=item.early_withdraw_rate,
+            price_source=item.price_source or None,
+            next_valuation=item.next_valuation,
+            asset_meta=item.asset_meta,
+        )
+        fields.update(overrides)
+        return cls(**fields)
+
 
 @dataclass(frozen=True)
 class ItemOverview:

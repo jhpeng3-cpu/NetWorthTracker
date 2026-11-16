@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSplitter,
-    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -38,10 +37,10 @@ from app.ui.common import (
     show_exception,
     show_warning,
     table_item,
+    to_qdate,
 )
-from app.ui.dialogs.snapshot_dialog import SnapshotEditDialog, to_qdate
+from app.ui.dialogs.snapshot_dialog import SnapshotEditDialog
 from app.ui.pages.base import BasePage
-from app.ui.styles import palette
 from app.utils.async_task import run_async
 from app.utils.dates import add_months
 from app.utils.money import fmt_money, fmt_signed_money, symbol_for
@@ -53,7 +52,6 @@ class HistoryPage(BasePage):
         self._rows: Dict[int, SnapshotRow] = {}
         self._list_request = 0
         self._compare_request = 0
-        self._theme = config.theme
         self._build_ui()
         self._load_filter_accounts()
         self._query()
@@ -378,7 +376,7 @@ class HistoryPage(BasePage):
             return
         start = result.start_point
         end = result.end_point
-        colors = palette(self._theme)
+        colors = self.colors
         symbol = self.symbol
         values = [
             (

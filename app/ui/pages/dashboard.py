@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from typing import List, Optional
 
 from PySide6.QtWidgets import (
@@ -24,7 +23,6 @@ from app.services.analytics import CurrentSummary, NetWorthPoint, PieSlice
 from app.services.profit import PortfolioSummary
 from app.ui.common import StatCard, show_error
 from app.ui.pages.base import BasePage
-from app.ui.styles import palette
 from app.ui.widgets.charts import DonutChart, LineChart
 from app.utils.async_task import run_async
 from app.utils.dates import (
@@ -78,7 +76,6 @@ class DashboardPage(BasePage):
     def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(config, parent)
         self._request_id = 0
-        self._theme = config.theme
         self._build_ui()
         self._apply_styles()
 
@@ -172,7 +169,7 @@ class DashboardPage(BasePage):
         self.root.addWidget(history_panel, 1)
 
     def _apply_styles(self) -> None:
-        colors = palette(self._theme)
+        colors = self.colors
         self.empty_label.setStyleSheet(
             f"background: {colors['surface_alt']}; border: 1px solid {colors['border']};"
             f" border-radius: 8px; padding: 8px 12px; color: {colors['muted']};"
@@ -182,7 +179,7 @@ class DashboardPage(BasePage):
         self._reload()
 
     def apply_theme(self, theme: str) -> None:
-        self._theme = theme
+        super().apply_theme(theme)
         self._apply_styles()
         self.asset_chart.apply_theme(theme)
         self.liability_chart.apply_theme(theme)

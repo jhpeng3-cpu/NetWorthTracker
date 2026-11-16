@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     Account,
     AccountItem,
-    CATEGORY_LABELS,
     SIDE_LABELS,
     ValuationSnapshot,
 )
