@@ -1,7 +1,7 @@
 """盈亏分析页面：按子项展示成本、市值、盈亏额与盈亏率，并支持区间统计。"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import List, Optional, Tuple
 
@@ -62,6 +62,20 @@ PERIOD_HEADERS = [
 
 PERIOD_WIDTHS = [120, 100, 50, 76, 110, 110, 110, 110, 110, 90, 120]
 
+DAY_HEADERS = [
+    "账户",
+    "子项",
+    "方向",
+    "类别",
+    "前一日市值",
+    "当日市值",
+    "前一日成本",
+    "当日成本",
+    "当日盈亏",
+    "当日收益率",
+    "折合人民币",
+]
+
 ACCOUNT_HEADERS = [
     "账户",
     "方向",
@@ -94,7 +108,7 @@ class ProfitPage(BasePage):
     def _build_ui(self) -> None:
         header = self.add_header(
             "盈亏分析",
-            "按买入币种计算盈亏；仅统计已录成本批次的资产子项。可切换累计或区间统计。",
+            "按买入币种计算盈亏；仅统计已录成本批次的资产子项。支持按天、累计或区间统计，默认显示当天盈亏。",
         )
         refresh_button = QPushButton("刷新")
         refresh_button.clicked.connect(self.refresh)
@@ -125,6 +139,7 @@ class ProfitPage(BasePage):
         period_label = QLabel("区间")
         period_label.setObjectName("Hint")
         self.period_combo = QComboBox()
+        self.period_combo.addItem("按天", "day")
         self.period_combo.addItem("当前累计", "cumulative")
         self.period_combo.addItem("近一个月", "last_month")
         self.period_combo.addItem("近一年", "last_year")
@@ -132,7 +147,7 @@ class ProfitPage(BasePage):
         self.period_combo.addItem("按月份", "month")
         self.period_combo.currentIndexChanged.connect(self._on_period_changed)
         self.detail_combo = QComboBox()
-        self.detail_combo.setMinimumWidth(104)
+        self.detail_combo.setMinimumWidth(150)
         self.detail_combo.setVisible(False)
         self.detail_combo.currentIndexChanged.connect(self.refresh)
         self.show_archived = QCheckBox("显示已归档账户")
@@ -164,6 +179,7 @@ class ProfitPage(BasePage):
         self.empty_label.setObjectName("Hint")
         self.empty_label.hide()
         self.root.addWidget(self.empty_label)
+        self._populate_detail()
 
     # ---- 数据 ----
 
@@ -182,11 +198,22 @@ class ProfitPage(BasePage):
         self.refresh()
 
     def _on_period_changed(self, _index: int) -> None:
+        self._populate_detail()
+        self.refresh()
+
+    def _populate_detail(self) -> None:
         mode = self.period_combo.currentData()
         today = date.today()
         self.detail_combo.blockSignals(True)
         self.detail_combo.clear()
-        if mode == "year":
+        if mode == "day":
+            for offset in range(30):
+                current = today - timedelta(days=offset)
+                label = f"{current:%Y-%m-%d}"
+                if offset == 0:
+                    label += "（今天）"
+                self.detail_combo.addItem(label, current.isoformat())
+        elif mode == "year":
             for year in range(today.year, today.year - 10, -1):
                 self.detail_combo.addItem(f"{year} 年", year)
         elif mode == "month":
@@ -197,13 +224,16 @@ class ProfitPage(BasePage):
                     f"{cursor.year}-{cursor.month:02d}",
                 )
                 cursor = add_months(cursor, -1)
-        self.detail_combo.setVisible(mode in ("year", "month"))
+        self.detail_combo.setVisible(mode in ("day", "year", "month"))
         self.detail_combo.blockSignals(False)
-        self.refresh()
 
     def _period_range(self) -> Optional[Tuple[date, date]]:
         mode = self.period_combo.currentData()
         today = date.today()
+        if mode == "day":
+            text = str(self.detail_combo.currentData() or today.isoformat())
+            day = date.fromisoformat(text)
+            return day, day
         if mode == "last_month":
             return add_months(today, -1), today
         if mode == "last_year":
@@ -229,7 +259,12 @@ class ProfitPage(BasePage):
             return
         self.table.setColumnCount(len(HEADERS))
         if period:
-            self.table.setHorizontalHeaderLabels(PERIOD_HEADERS)
+            headers = (
+                DAY_HEADERS
+                if self.period_combo.currentData() == "day"
+                else PERIOD_HEADERS
+            )
+            self.table.setHorizontalHeaderLabels(headers)
             set_columns(self.table, PERIOD_WIDTHS)
             align_headers(self.table, (4, 5, 6, 7, 8, 9, 10))
         else:
@@ -326,6 +361,8 @@ class ProfitPage(BasePage):
 
     def _period_label(self) -> str:
         mode = self.period_combo.currentData()
+        if mode == "day":
+            return f"{self.detail_combo.currentData()} 当日"
         if mode == "year":
             return f"{self.detail_combo.currentData()} 年"
         if mode == "month":
@@ -347,8 +384,10 @@ class ProfitPage(BasePage):
             f"{self._period_label()}"
             f" · {summary.start:%Y-%m-%d} ~ {summary.end:%Y-%m-%d}"
             f" · 共 {summary.item_count} 项"
-            f" · 期末市值 {fmt_money(summary.end_value_cny, self.symbol)}"
-            f" · 期间盈亏 {fmt_money(summary.pnl_cny, self.symbol, show_sign=True)}{rate_text}"
+            f" · {'当日市值' if summary.start == summary.end else '期末市值'}"
+            f" {fmt_money(summary.end_value_cny, self.symbol)}"
+            f" · {'当日盈亏' if summary.start == summary.end else '期间盈亏'}"
+            f" {fmt_money(summary.pnl_cny, self.symbol, show_sign=True)}{rate_text}"
         )
         if summary.missing_rate:
             text += f" · {summary.missing_rate} 项缺少汇率"

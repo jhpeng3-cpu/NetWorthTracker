@@ -258,6 +258,41 @@ QTableWidget, QTableView {
 QTableWidget::item, QTableView::item {
     padding: 4px 6px;
 }
+QCalendarWidget {
+    background: $surface;
+    min-width: 300px;
+    min-height: 230px;
+}
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: $surface_alt;
+    border-bottom: 1px solid $border;
+}
+QCalendarWidget QToolButton {
+    color: $text;
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+}
+QCalendarWidget QToolButton:hover {
+    background: $selection;
+    border-radius: 6px;
+}
+QCalendarWidget QSpinBox {
+    background: $surface;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: 6px;
+}
+QCalendarWidget QTableView {
+    background: $surface;
+    border: none;
+    border-radius: 0;
+    selection-background-color: $accent;
+    selection-color: #ffffff;
+}
+QCalendarWidget QTableView::item {
+    padding: 0px;
+}
 QHeaderView::section {
     background: $surface_alt;
     color: $muted;
