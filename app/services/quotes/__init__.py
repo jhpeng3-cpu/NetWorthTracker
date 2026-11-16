@@ -23,6 +23,7 @@ from app.services.quotes.gold import (
 from app.services.quotes.provider import (
     clear_cache,
     get_price,
+    prefetch_prices,
     resolve_market,
 )
 from app.services.quotes.stock import (
@@ -65,6 +66,7 @@ __all__ = [
     "parse_gold_api",
     "parse_sina_futures",
     "parse_sina_spot",
+    "prefetch_prices",
     "refresh_rates",
     "refresh_stock_quotes",
     "resolve_market",

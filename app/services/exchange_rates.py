@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import json
-import urllib.request
+import threading
+import time
 from bisect import bisect_right
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP, getcontext
@@ -18,12 +19,18 @@ from sqlalchemy.orm import Session
 
 from app.db.models import BASE_CURRENCY, CURRENCY_CODES, ExchangeRate
 from app.utils.exceptions import AppRuntimeError
+from app.utils.http_client import fetch_bytes
 
 getcontext().prec = 28
 
 RATE_QUANT = Decimal("0.000001")
 CENT = Decimal("0.01")
-HTTP_TIMEOUT = 15
+HTTP_TIMEOUT = 5.0
+RATE_CACHE_TTL = 60.0
+
+_RATE_CACHE: Optional[Tuple[float, Dict[str, Decimal], str]] = None
+_CACHE_LOCK = threading.Lock()
+_FETCH_LOCK = threading.Lock()
 
 
 class ExchangeRateError(AppRuntimeError):
@@ -56,31 +63,53 @@ def _parse_currency_api(payload: dict) -> Dict[str, Decimal]:
 
 
 _SOURCES: List[Tuple[str, Callable[[dict], Dict[str, Decimal]]]] = [
-    ("https://open.er-api.com/v6/latest/CNY", _parse_erapi),
-    ("https://latest.currency-api.pages.dev/v1/currencies/cny.json", _parse_currency_api),
     (
         "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/cny.json",
         _parse_currency_api,
     ),
+    ("https://latest.currency-api.pages.dev/v1/currencies/cny.json", _parse_currency_api),
+    ("https://open.er-api.com/v6/latest/CNY", _parse_erapi),
 ]
 
 
-def fetch_latest_rates() -> Tuple[Dict[str, Decimal], str]:
-    """依次尝试各数据源，返回（汇率字典, 生效的数据源地址）。"""
+def clear_cache() -> None:
+    global _RATE_CACHE
+    with _CACHE_LOCK:
+        _RATE_CACHE = None
+
+
+def fetch_latest_rates(force: bool = False) -> Tuple[Dict[str, Decimal], str]:
+    """依次尝试各数据源，返回（汇率字典, 生效的数据源地址）。
+
+    默认复用 60 秒内的结果；用户主动刷新汇率时传 force=True。
+    """
+    global _RATE_CACHE
+    if not force:
+        with _CACHE_LOCK:
+            cached = _RATE_CACHE
+        if cached is not None and time.monotonic() - cached[0] < RATE_CACHE_TTL:
+            return dict(cached[1]), cached[2]
+
     errors: List[str] = []
-    for url, parser in _SOURCES:
-        try:
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "NetWorthTracker"}
-            )
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            rates = parser(payload)
-            if rates:
-                return rates, url
-            errors.append(f"{url}：未返回所需币种")
-        except Exception as exc:  # noqa: BLE001 - 逐源尝试，最后汇总
-            errors.append(f"{url}：{exc}")
+    with _FETCH_LOCK:
+        if not force:
+            with _CACHE_LOCK:
+                cached = _RATE_CACHE
+            if cached is not None and time.monotonic() - cached[0] < RATE_CACHE_TTL:
+                return dict(cached[1]), cached[2]
+        for url, parser in _SOURCES:
+            try:
+                payload = json.loads(
+                    fetch_bytes(url, timeout=HTTP_TIMEOUT).decode("utf-8")
+                )
+                rates = parser(payload)
+                if rates:
+                    with _CACHE_LOCK:
+                        _RATE_CACHE = (time.monotonic(), dict(rates), url)
+                    return rates, url
+                errors.append(f"{url}：未返回所需币种")
+            except Exception as exc:  # noqa: BLE001 - 逐源尝试，最后汇总
+                errors.append(f"{url}：{exc}")
     raise ExchangeRateError("所有汇率源均请求失败。" + "；".join(errors))
 
 
@@ -113,7 +142,7 @@ def save_rates(
 
 def refresh_rates(session: Session) -> Tuple[date, int]:
     """拉取并保存最新汇率，返回（日期, 币种数量）。"""
-    rates, source = fetch_latest_rates()
+    rates, source = fetch_latest_rates(force=True)
     return save_rates(session, rates, source=source)
 
 

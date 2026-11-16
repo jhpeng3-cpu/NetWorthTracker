@@ -4,7 +4,7 @@
 
 - Python 3.9+ / PySide6（原生 Qt 窗口）
 - SQLite（单文件，Python 内置）/ SQLAlchemy 2.x / Alembic
-- 图表：matplotlib（嵌入 Qt）
+- 图表：Qt 原生绘制（环形图 + 折线图）
 - 金额：`Decimal`，数据库 `NUMERIC(18,2)`
 - 支持币种：人民币（CNY）、美元（USD）、日元（JPY）、澳门元（MOP）、港币（HKD）
 
@@ -232,13 +232,13 @@ dist\NetWorthTracker\NetWorthTracker.exe
 
 **股票没有现价**：确认子项类别为「股票」且代码正确（如 `600519` / `00700` / `AAPL`），并检查是否已录入成本批次（数量来源）。
 
-**中文图表乱码**：代码已设置微软雅黑/黑体；如系统缺少字体，可安装或修改 `app/ui/widgets/charts.py` 中的 `font.sans-serif`。
+**中文图表乱码**：图表默认使用微软雅黑，Qt 会在缺少该字体时自动回退；也可修改 `app/ui/widgets/charts.py` 中的 `FONT_FAMILY`。
 
 **应用启动后无数据**：确认「设置 → 数据库文件」指向的是正确的 `.db` 文件。
 
 ## 十、实现约定
 
-- 所有金额计算在 Python 侧使用 `Decimal`；matplotlib 仅为了绘图在最后一刻转 `float`。
+- 所有金额计算在 Python 侧使用 `Decimal`；图表绘制时仅为像素坐标将金额转为 `float`。
 - 数据库访问使用 SQLAlchemy 2.x `select()` 与 Session；每个操作使用独立会话。
 - 仪表盘、历史查询、行情/汇率刷新与备份在 `QThreadPool` 后台线程执行，避免界面卡顿。
 - 全局异常捕获：未捕获异常写入 `networth.log` 并转为中文提示，启动失败写入 `startup_error.log` 并弹窗。

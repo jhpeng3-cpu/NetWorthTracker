@@ -632,7 +632,7 @@ class ItemDialog(QDialog):
             item = self.lots_table.item(row, column)
             return item.text().strip() if item else ""
 
-        if not any(text(column) for column in range(4)):
+        if not any(text(column) for column in (0, 1, 2, 4)):
             return None
         day = QDate.fromString(text(0), "yyyy-MM-dd")
         if not day.isValid():

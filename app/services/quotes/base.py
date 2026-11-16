@@ -1,15 +1,16 @@
 """行情适配器公共类型与 HTTP 工具。"""
 from __future__ import annotations
 
+import threading
 import time
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-HTTP_TIMEOUT = 5
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetWorthTracker"
+from app.utils.http_client import fetch_bytes
+
+HTTP_TIMEOUT = 4.0
 
 
 class QuoteError(Exception):
@@ -31,12 +32,7 @@ class PricePoint:
 
 
 def http_get(url: str, referer: Optional[str] = None) -> bytes:
-    headers = {"User-Agent": UA}
-    if referer:
-        headers["Referer"] = referer
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-        return response.read()
+    return fetch_bytes(url, referer=referer, timeout=HTTP_TIMEOUT)
 
 
 def to_price(value: object) -> Optional[Decimal]:
@@ -50,13 +46,15 @@ def to_price(value: object) -> Optional[Decimal]:
 
 
 _LAST_REQUEST = 0.0
-_MIN_INTERVAL = 0.35
+_MIN_INTERVAL = 0.05
+_THROTTLE_LOCK = threading.Lock()
 
 
 def throttle() -> None:
-    """简单限频：两次外部请求之间至少间隔 0.35 秒。"""
+    """简单限频：两次外部请求之间至少间隔 0.05 秒。"""
     global _LAST_REQUEST
-    elapsed = time.monotonic() - _LAST_REQUEST
-    if elapsed < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - elapsed)
-    _LAST_REQUEST = time.monotonic()
+    with _THROTTLE_LOCK:
+        elapsed = time.monotonic() - _LAST_REQUEST
+        if elapsed < _MIN_INTERVAL:
+            time.sleep(_MIN_INTERVAL - elapsed)
+        _LAST_REQUEST = time.monotonic()

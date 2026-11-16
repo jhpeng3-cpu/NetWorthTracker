@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Iterable, Optional, Tuple
 
 from app.services.quotes.base import PricePoint, QuoteError, throttle
 from app.services.quotes.commodity import fetch_commodity, normalize_commodity
@@ -83,3 +84,43 @@ def get_price(
 
 def clear_cache() -> None:
     _CACHE.clear()
+
+
+def prefetch_prices(
+    specs: Iterable[Tuple[str, str, str]],
+    fetcher: Optional[object] = None,
+) -> int:
+    """并发预取行情，填充内存缓存；返回实际发起的请求数。
+
+    仅用于刷新前的网络预热，不写数据库。单项失败会被忽略，
+    后续估值阶段会按原有逻辑回退缓存价或报告失败。
+    """
+    pending: list[Tuple[str, str, str]] = []
+    seen: set[Tuple[str, str]] = set()
+    for symbol, market, category in specs:
+        clean_symbol, clean_market = resolve_market(symbol, market, category)
+        if not clean_symbol:
+            continue
+        key = (clean_symbol, clean_market)
+        if key in seen:
+            continue
+        seen.add(key)
+        cached = _CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[0] < CACHE_TTL:
+            continue
+        pending.append((symbol, market, category))
+
+    if not pending:
+        return 0
+
+    fetch = fetcher or get_price
+
+    def _fetch(spec: Tuple[str, str, str]) -> None:
+        try:
+            fetch(*spec)
+        except Exception:  # noqa: BLE001 - 失败留给估值阶段处理
+            return
+
+    with ThreadPoolExecutor(max_workers=min(4, len(pending))) as pool:
+        list(pool.map(_fetch, pending))
+    return len(pending)

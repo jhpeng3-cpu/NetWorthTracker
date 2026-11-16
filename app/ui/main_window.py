@@ -238,7 +238,7 @@ class MainWindow(QMainWindow):
             "关于财序",
             f"财序 v{__version__}\n\n"
             "个人资产负债记录与净资产追踪工具。\n"
-            "PySide6 · SQLAlchemy 2 · SQLite · Alembic · matplotlib\n\n"
+            "PySide6 · SQLAlchemy 2 · SQLite · Alembic · Qt 原生图表\n\n"
             f"配置文件：{self.config.path}",
         )
 

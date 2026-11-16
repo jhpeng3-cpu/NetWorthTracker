@@ -8,8 +8,8 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Account, AccountItem
-from app.services import snapshots
+from app.db.models import VALUATION_AUTO, Account, AccountItem
+from app.services import quotes, snapshots
 from app.services.valuation.registry import valuator_for
 
 STATUS_UPDATED = "updated"
@@ -66,6 +66,15 @@ def refresh_all(
         .where(Account.side == "asset", Account.archived.is_(False))
         .order_by(Account.name, AccountItem.sort_order, AccountItem.id)
     ).all()
+
+    # 行情自动类先并发预取，避免逐个串行等待网络；写库仍在当前线程完成。
+    prefetch = []
+    for item, _account in rows:
+        valuator = valuator_for(item)
+        if valuator is not None and getattr(valuator, "mode", "") == VALUATION_AUTO:
+            prefetch.append((item.symbol or "", item.market or "", item.category))
+    quotes.prefetch_prices(prefetch, fetcher=quotes.get_price)
+
     for item, account in rows:
         valuator = valuator_for(item)
         if valuator is None:
