@@ -28,6 +28,7 @@ from app.ui.common import (
     make_table,
     parse_optional_decimal,
     set_columns,
+    to_qdate,
 )
 from app.ui.styles import palette
 from app.ui.titlebar import current_theme
@@ -153,7 +154,7 @@ class LotsEditor(QGroupBox):
             values = ["", "", "", "0", ""]
         else:
             values = [
-                lot.trade_date.strftime(DATE_FORMAT),
+                to_qdate(lot.trade_date).toString(DATE_FORMAT),
                 fmt_number(lot.quantity, 4),
                 fmt_number(lot.unit_cost, 6),
                 fmt_number(lot.fee, 2),

@@ -249,6 +249,22 @@ def show_exception(parent: QWidget, title: str, exc: BaseException) -> None:
     show_error(parent, title, report_exception(exc, title))
 
 
+def run_save(parent: QWidget, action: Callable[[], None], title: str = "保存失败") -> bool:
+    """执行保存动作：校验错误提示警告，其它异常走统一出口并打印。
+
+    返回 True 表示保存成功；False 表示失败（调用方应保持弹窗打开）。
+    """
+    try:
+        action()
+    except ValueError as exc:
+        show_warning(parent, "无法保存", str(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001
+        show_exception(parent, title, exc)
+        return False
+    return True
+
+
 def money_text(value: Optional[Decimal], symbol: str, placeholder: str = "—") -> str:
     from app.utils.money import fmt_money
 

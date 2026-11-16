@@ -38,13 +38,13 @@ from app.services import valuation
 from app.services.accounts import AccountOverview, ItemInput, ItemOverview
 from app.services.profit import CostSummary
 from app.services.snapshots import SnapshotExistsError
-from app.utils.exceptions import AppValidationError
 from app.ui.common import (
+    align_headers,
     confirm,
     danger_button,
-    align_headers,
     make_table,
     primary_button,
+    run_save,
     set_columns,
     show_exception,
     show_warning,
@@ -651,6 +651,15 @@ class AccountsPage(BasePage):
         current = self._selected_item()
         if overview is None or current is None:
             return
+
+        def save(day: date, value: Decimal, note: str) -> None:
+            try:
+                self._persist_snapshot(current.id, day, value, note)
+            except SnapshotExistsError as exc:
+                if not confirm(self, "覆盖已有估值", str(exc)):
+                    raise ValueError("已取消覆盖，请调整估值日期后重新保存。") from None
+                self._persist_snapshot(current.id, day, value, note, overwrite=True)
+
         dialog = SnapshotEntryDialog(
             overview.name,
             current.name,
@@ -658,17 +667,12 @@ class AccountsPage(BasePage):
             current.category_label,
             symbol_for(current.currency, self.symbol),
             parent=self,
+            on_save=save,
         )
-        if not dialog.exec():
-            return
-        try:
-            day, value, note = dialog.values()
-        except AppValidationError as exc:
-            show_warning(self, "无法保存", str(exc))
-            return
-        self._save_snapshot(current.id, day, value, note)
+        if dialog.exec():
+            self._after_change()
 
-    def _save_snapshot(
+    def _persist_snapshot(
         self,
         item_id: int,
         day: date,
@@ -676,27 +680,16 @@ class AccountsPage(BasePage):
         note: str,
         overwrite: bool = False,
     ) -> None:
-        try:
-            with db.session_scope() as session:
-                snapshot_service.save_snapshot(
-                    session,
-                    item_id=item_id,
-                    snapshot_date=day,
-                    value=value,
-                    note=note,
-                    overwrite=overwrite,
-                )
-        except SnapshotExistsError as exc:
-            if confirm(self, "覆盖已有估值", str(exc)):
-                self._save_snapshot(item_id, day, value, note, overwrite=True)
-            return
-        except AppValidationError as exc:
-            show_warning(self, "无法保存", str(exc))
-            return
-        except Exception as exc:  # noqa: BLE001
-            show_exception(self, "保存失败", exc)
-            return
-        self._after_change()
+        """写入估值快照；失败时抛异常，由弹窗统一提示。"""
+        with db.session_scope() as session:
+            snapshot_service.save_snapshot(
+                session,
+                item_id=item_id,
+                snapshot_date=day,
+                value=value,
+                note=note,
+                overwrite=overwrite,
+            )
 
     def _batch_entry(self) -> None:
         overview = self._selected_account()
@@ -837,20 +830,23 @@ class AccountsPage(BasePage):
         self._after_change()
 
     # ---- 子项操作 ----
+    def _persist_items(
+        self, overview: AccountOverview, items: List[ItemInput]
+    ) -> None:
+        """保存子项列表；失败时抛异常，由弹窗统一处理。"""
+        with db.session_scope() as session:
+            account_service.update_account(
+                session,
+                overview.id,
+                name=overview.name,
+                side=overview.side,
+                items=items,
+                currency=overview.currency,
+                note=overview.note,
+            )
+
     def _save_items(self, overview: AccountOverview, items: List[ItemInput]) -> None:
-        try:
-            with db.session_scope() as session:
-                account_service.update_account(
-                    session,
-                    overview.id,
-                    name=overview.name,
-                    side=overview.side,
-                    items=items,
-                    currency=overview.currency,
-                    note=overview.note,
-                )
-        except Exception as exc:  # noqa: BLE001
-            show_exception(self, "保存失败", exc)
+        if not run_save(self, lambda: self._persist_items(overview, items)):
             return
         self._after_change()
 
@@ -862,29 +858,33 @@ class AccountsPage(BasePage):
         overview = self._selected_account()
         if overview is None:
             return
+
+        def save(dialog: ItemDialog) -> None:
+            name, category, symbol, rate, start = dialog.values()
+            valuation = dialog.valuation_values()
+            items = self._base_items(overview)
+            items.append(
+                ItemInput(
+                    name=name,
+                    category=category,
+                    currency=dialog.currency_value(),
+                    symbol=symbol or None,
+                    interest_rate=rate,
+                    interest_start=start,
+                    **valuation,
+                )
+            )
+            self._persist_items(overview, items)
+
         dialog = ItemDialog(
             overview.side,
             title="新增类别子项",
             parent=self,
             currency=overview.currency,
+            on_save=save,
         )
-        if not dialog.exec():
-            return
-        name, category, symbol, interest_rate, interest_start = dialog.values()
-        valuation = dialog.valuation_values()
-        items = self._base_items(overview)
-        items.append(
-            ItemInput(
-                name=name,
-                category=category,
-                currency=dialog.currency_value(),
-                symbol=symbol or None,
-                interest_rate=interest_rate,
-                interest_start=interest_start,
-                **valuation,
-            )
-        )
-        self._save_items(overview, items)
+        if dialog.exec():
+            self._after_change()
 
     def _edit_item(self) -> None:
         overview = self._selected_account()
@@ -903,6 +903,37 @@ class AccountsPage(BasePage):
             except Exception as exc:  # noqa: BLE001
                 show_exception(self, "读取成本失败", exc)
                 return
+        def save(dialog: ItemDialog) -> None:
+            name, category, symbol, rate, start = dialog.values()
+            valuation = dialog.valuation_values()
+            overrides = dict(
+                name=name,
+                category=category,
+                currency=dialog.currency_value(),
+                symbol=symbol or None,
+                interest_rate=rate,
+                interest_start=start,
+                **valuation,
+            )
+            items = [
+                ItemInput.from_overview(item, **overrides)
+                if item.id == current.id
+                else ItemInput.from_overview(item)
+                for item in overview.items
+            ]
+            with db.session_scope() as session:
+                account_service.update_account(
+                    session,
+                    overview.id,
+                    name=overview.name,
+                    side=overview.side,
+                    items=items,
+                    currency=overview.currency,
+                    note=overview.note,
+                )
+                if allow_lots:
+                    profit.save_lots(session, current.id, dialog.lot_values())
+
         dialog = ItemDialog(
             overview.side,
             name=current.name,
@@ -928,43 +959,10 @@ class AccountsPage(BasePage):
             price_source=current.price_source,
             next_valuation=current.next_valuation,
             asset_meta=current.asset_meta,
+            on_save=save,
         )
-        if not dialog.exec():
-            return
-        name, category, symbol, interest_rate, interest_start = dialog.values()
-        valuation = dialog.valuation_values()
-        overrides = dict(
-            name=name,
-            category=category,
-            currency=dialog.currency_value(),
-            symbol=symbol or None,
-            interest_rate=interest_rate,
-            interest_start=interest_start,
-            **valuation,
-        )
-        items = [
-            ItemInput.from_overview(item, **overrides)
-            if item.id == current.id
-            else ItemInput.from_overview(item)
-            for item in overview.items
-        ]
-        try:
-            with db.session_scope() as session:
-                account_service.update_account(
-                    session,
-                    overview.id,
-                    name=overview.name,
-                    side=overview.side,
-                    items=items,
-                    currency=overview.currency,
-                    note=overview.note,
-                )
-                if allow_lots:
-                    profit.save_lots(session, current.id, dialog.lot_values())
-        except Exception as exc:  # noqa: BLE001
-            show_exception(self, "保存失败", exc)
-            return
-        self._after_change()
+        if dialog.exec():
+            self._after_change()
 
     def _edit_costs(self) -> None:
         overview = self._selected_account()
@@ -979,6 +977,10 @@ class AccountsPage(BasePage):
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "读取成本失败", exc)
             return
+        def save(dialog: ItemDialog) -> None:
+            with db.session_scope() as session:
+                profit.save_lots(session, current.id, dialog.lot_values())
+
         dialog = ItemDialog(
             overview.side,
             title=f"成本批次 · {current.name}",
@@ -987,16 +989,10 @@ class AccountsPage(BasePage):
             lots_only=True,
             lots=lots,
             cost_currency=cost_currency,
+            on_save=save,
         )
-        if not dialog.exec():
-            return
-        try:
-            with db.session_scope() as session:
-                profit.save_lots(session, current.id, dialog.lot_values())
-        except Exception as exc:  # noqa: BLE001
-            show_exception(self, "保存失败", exc)
-            return
-        self._after_change()
+        if dialog.exec():
+            self._after_change()
 
     def _delete_item(self) -> None:
         overview = self._selected_account()

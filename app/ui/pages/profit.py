@@ -645,6 +645,10 @@ class ProfitPage(BasePage):
         except Exception as exc:  # noqa: BLE001
             show_exception(self, "读取成本失败", exc)
             return
+        def save(dialog: ItemDialog) -> None:
+            with db.session_scope() as session:
+                profit.save_lots(session, item_id, dialog.lot_values())
+
         dialog = ItemDialog(
             side,
             title=f"成本批次 · {title_name}",
@@ -653,14 +657,8 @@ class ProfitPage(BasePage):
             lots_only=True,
             lots=lots,
             cost_currency=cost_currency,
+            on_save=save,
         )
-        if not dialog.exec():
-            return
-        try:
-            with db.session_scope() as session:
-                profit.save_lots(session, item_id, dialog.lot_values())
-        except Exception as exc:  # noqa: BLE001
-            show_exception(self, "保存失败", exc)
-            return
-        self.refresh()
-        self.data_changed.emit()
+        if dialog.exec():
+            self.refresh()
+            self.data_changed.emit()

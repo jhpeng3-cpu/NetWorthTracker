@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -45,6 +45,7 @@ from app.ui.common import (
     date_edit,
     dialog_footer,
     parse_optional_decimal,
+    run_save,
     show_warning,
 )
 from app.ui.widgets.lots_editor import LotsEditor
@@ -116,6 +117,7 @@ class ItemDialog(QDialog):
         price_source: str = "",
         next_valuation: Optional[date] = None,
         asset_meta: Optional[dict] = None,
+        on_save: Optional[Callable[["ItemDialog"], None]] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -124,6 +126,7 @@ class ItemDialog(QDialog):
         self.side = side
         self.allow_lots = allow_lots
         self.lots_only = lots_only
+        self._on_save = on_save
         self._asset_meta = asset_meta or {}
         self._original_valuation = {
             "valuation_mode": valuation_mode or VALUATION_MANUAL,
@@ -596,24 +599,41 @@ class ItemDialog(QDialog):
             start,
         )
 
+    def _current_mode(self) -> str:
+        if not hasattr(self, "mode_combo"):
+            return self._original_valuation.get("valuation_mode") or VALUATION_MANUAL
+        return self.mode_combo.currentData() or VALUATION_MANUAL
+
     def _submit(self) -> None:
         if not self.lots_only:
-            name, _category, _symbol, _rate, _start = self.values()
+            name = self.name_edit.text().strip()
             if not name:
                 show_warning(self, "请填写名称", "子项名称不能为空。")
                 self.name_edit.setFocus()
                 return
             try:
-                self.interest_values()
-                if self.side == "asset":
-                    self.valuation_values()
+                _name, _category, _symbol, rate, _start = self.values()
+                self.valuation_values()
+                if self.allow_lots:
+                    self.lot_values()
+                if (
+                    self.side == "asset"
+                    and self._current_mode() == VALUATION_ACCRUAL
+                    and rate is None
+                ):
+                    raise ValueError("计息增值需要填写年利率。")
             except ValueError as exc:
-                show_warning(self, "估值参数有误", str(exc))
+                show_warning(self, "无法保存", str(exc))
                 return
-        if self.allow_lots:
+        elif self.allow_lots:
             try:
                 self.lot_values()
             except ValueError as exc:
                 show_warning(self, "成本批次有误", str(exc))
                 return
+
+        if self._on_save is not None and not run_save(
+            self, lambda: self._on_save(self)
+        ):
+            return
         self.accept()

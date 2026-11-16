@@ -1,14 +1,11 @@
 """把耗时操作放到 QThreadPool，避免阻塞界面。"""
 from __future__ import annotations
 
-import logging
 from typing import Callable, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
-from app.utils.exceptions import friendly_message
-
-logger = logging.getLogger(__name__)
+from app.utils.exceptions import report_exception
 
 # PySide6 中 QThreadPool 不会持有 Python QRunnable 的强引用，
 # 必须在任务结束前保留引用，否则对象会被 GC 回收导致任务不执行。
@@ -31,8 +28,7 @@ class Worker(QRunnable):
         try:
             result = self._fn()
         except Exception as exc:  # noqa: BLE001 - 需要把错误送回 UI 线程
-            logger.exception("后台任务失败")
-            self.signals.failed.emit(friendly_message(exc))
+            self.signals.failed.emit(report_exception(exc, "后台任务失败"))
         else:
             self.signals.finished.emit(result)
 

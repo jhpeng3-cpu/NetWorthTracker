@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -15,7 +15,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.ui.common import date_edit, dialog_footer, from_qdate, show_warning
+from app.ui.common import (
+    date_edit,
+    dialog_footer,
+    from_qdate,
+    run_save,
+    show_warning,
+)
 from app.utils.money import AmountError, parse_amount
 
 
@@ -31,9 +37,11 @@ class SnapshotEntryDialog(QDialog):
         symbol: str,
         default_value: Optional[Decimal] = None,
         parent: Optional[QWidget] = None,
+        on_save: Optional[Callable[[object, Decimal, str], None]] = None,
     ):
         super().__init__(parent)
         self._symbol = symbol
+        self._on_save = on_save
         self.setWindowTitle("录入估值")
         self.setMinimumWidth(430)
         self.setModal(True)
@@ -82,9 +90,13 @@ class SnapshotEntryDialog(QDialog):
 
     def _submit(self) -> None:
         try:
-            self.values()
+            day, value, note = self.values()
         except AmountError as exc:
             show_warning(self, "无法保存", str(exc))
             self.value_edit.setFocus()
+            return
+        if self._on_save is not None and not run_save(
+            self, lambda: self._on_save(day, value, note)
+        ):
             return
         self.accept()
