@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.config import AppConfig
 from app.db.engine import db
-from app.services import backup, exchange_rates, quotes
+from app.services import backup, exchange_rates, valuation
+from app.services.valuation import manual as valuation_manual
 from app.ui.common import show_error, show_info
 from app.ui.dialogs.db_config_dialog import DbConfigDialog
 from app.ui.pages.accounts import AccountsPage
@@ -45,13 +46,22 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.setWindowTitle("财序 · 个人资产负债表")
-        self.setMinimumSize(1280, 800)
-        self.resize(1380, 880)
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(1380, max(800, available.width() - 40))
+            height = min(880, max(560, available.height() - 40))
+        else:
+            width, height = 1380, 880
+        self.setMinimumSize(min(1120, width), min(680, height))
+        self.resize(width, height)
         self._build_menu()
         self._build_central()
         self._build_statusbar()
         self._apply_theme(self.config.theme)
         QTimer.singleShot(1500, self._auto_backup_if_needed)
+        QTimer.singleShot(1200, self._check_valuation_reminders)
         QTimer.singleShot(2500, self._startup_rate_refresh)
         QTimer.singleShot(3500, self._startup_quote_refresh)
         self._schedule_midnight_rate_fetch()
@@ -232,6 +242,36 @@ class MainWindow(QMainWindow):
             f"配置文件：{self.config.path}",
         )
 
+    # ---- 估值提醒 ----
+    def _check_valuation_reminders(self) -> None:
+        if not db.is_configured:
+            return
+
+        def task():
+            with db.session_scope() as session:
+                return valuation_manual.overdue_manual_items(session)
+
+        def success(result: object) -> None:
+            rows = list(result) if isinstance(result, list) else []
+            if not rows:
+                return
+            lines = [
+                f"· {row.account_name} / {row.item_name}"
+                f"（应于 {row.due_date:%Y-%m-%d} 更新）"
+                for row in rows[:10]
+            ]
+            more = "" if len(rows) <= 10 else f"\n……另有 {len(rows) - 10} 项"
+            show_info(
+                self,
+                "估值提醒",
+                "以下手动估值已到期未更新：\n\n"
+                + "\n".join(lines)
+                + more
+                + "\n\n可到「账户管理」录入最新估值。",
+            )
+
+        run_async(task, success, lambda _message: None)
+
     # ---- 自动备份 ----
     def _auto_backup_if_needed(self) -> None:
         if not self.config.auto_backup:
@@ -277,17 +317,22 @@ class MainWindow(QMainWindow):
 
         def task():
             with db.session_scope() as session:
-                return quotes.refresh_stock_quotes(session)
+                return valuation.refresh_all(session)
 
         def success(result) -> None:
-            if result.fetched or result.snapshots:
+            if result.updated or result.failed:
                 self._on_data_changed()
-                self.statusBar().showMessage(
-                    f"行情已更新：{result.fetched} 个代码，写入 {result.snapshots} 条估值",
-                    6000,
+                note = (
+                    f"估值刷新：成功 {result.updated}，跳过 {result.skipped}，"
+                    f"失败 {result.failed}"
                 )
-            elif result.failed:
-                self.statusBar().showMessage("行情获取失败，稍后自动重试", 6000)
+                if result.stale:
+                    note += f"，行情过期 {result.stale}"
+                self.statusBar().showMessage(note, 6000)
+            elif result.skipped:
+                self.statusBar().showMessage(
+                    f"暂无可自动估值的资产（跳过 {result.skipped} 项）", 6000
+                )
 
         def failure(_message: str) -> None:
             self.statusBar().showMessage("行情刷新失败，稍后自动重试", 6000)

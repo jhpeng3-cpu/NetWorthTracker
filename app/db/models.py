@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
@@ -33,6 +34,10 @@ CATEGORY_LABELS = {
     "stock": "股票",
     "bond": "债券",
     "fund": "基金",
+    "gold": "黄金",
+    "silver": "白银",
+    "commodity": "大宗商品",
+    "crypto": "加密资产",
     "other_asset": "其他资产",
     "short_term_debt": "短期负债",
     "long_term_debt": "长期负债",
@@ -40,11 +45,100 @@ CATEGORY_LABELS = {
 }
 
 CATEGORIES_BY_SIDE = {
-    SIDE_ASSET: ["fixed_asset", "cash", "stock", "bond", "fund", "other_asset"],
+    SIDE_ASSET: [
+        "fixed_asset",
+        "cash",
+        "stock",
+        "bond",
+        "fund",
+        "gold",
+        "silver",
+        "commodity",
+        "crypto",
+        "other_asset",
+    ],
     SIDE_LIABILITY: ["short_term_debt", "long_term_debt", "other_liability"],
 }
 
 ALL_CATEGORIES = set(CATEGORY_LABELS)
+
+# 估值方式：行情自动 / 计息增值 / 手动估值
+VALUATION_AUTO = "auto_quote"
+VALUATION_ACCRUAL = "accrual"
+VALUATION_MANUAL = "manual"
+VALUATION_MODES = (VALUATION_AUTO, VALUATION_ACCRUAL, VALUATION_MANUAL)
+VALUATION_MODE_LABELS = {
+    VALUATION_AUTO: "行情自动",
+    VALUATION_ACCRUAL: "计息增值",
+    VALUATION_MANUAL: "手动估值",
+}
+
+PAY_FREQUENCIES = ("none", "monthly", "quarterly", "semiannual", "annual", "at_maturity")
+PAY_FREQUENCY_LABELS = {
+    "none": "不计付",
+    "monthly": "每月",
+    "quarterly": "每季",
+    "semiannual": "每半年",
+    "annual": "每年",
+    "at_maturity": "到期一次",
+}
+COMPOUNDING_MODES = ("simple", "compound")
+COMPOUNDING_LABELS = {"simple": "单利", "compound": "复利"}
+
+FLOW_TYPES = (
+    "deposit",
+    "withdraw",
+    "buy",
+    "sell",
+    "interest",
+    "dividend",
+    "rent",
+    "fee",
+    "tax",
+    "transfer_in",
+    "transfer_out",
+)
+FLOW_TYPE_LABELS = {
+    "deposit": "存入",
+    "withdraw": "取出",
+    "buy": "买入",
+    "sell": "卖出",
+    "interest": "利息",
+    "dividend": "分红",
+    "rent": "租金",
+    "fee": "费用",
+    "tax": "税费",
+    "transfer_in": "转入",
+    "transfer_out": "转出",
+}
+
+
+def default_valuation_mode(category: str) -> str:
+    """按类别给出默认估值方式；用户仍可在表单中修改。"""
+    return allowed_valuation_modes(category)[0]
+
+
+# 各类资产允许的估值方式，首项为默认值；负债单独在服务层强制手动估值。
+ALLOWED_VALUATION_MODES = {
+    "cash": (VALUATION_ACCRUAL, VALUATION_MANUAL),
+    "bond": (VALUATION_ACCRUAL, VALUATION_MANUAL),
+    "stock": (VALUATION_AUTO, VALUATION_MANUAL),
+    "fund": (VALUATION_AUTO, VALUATION_MANUAL),
+    "gold": (VALUATION_AUTO, VALUATION_MANUAL),
+    "silver": (VALUATION_AUTO, VALUATION_MANUAL),
+    "commodity": (VALUATION_AUTO, VALUATION_MANUAL),
+    "crypto": (VALUATION_MANUAL,),
+    "fixed_asset": (VALUATION_MANUAL,),
+    "other_asset": (VALUATION_MANUAL,),
+    "short_term_debt": (VALUATION_MANUAL,),
+    "long_term_debt": (VALUATION_MANUAL,),
+    "other_liability": (VALUATION_MANUAL,),
+}
+
+
+def allowed_valuation_modes(category: str) -> tuple:
+    """类别允许的估值方式，未知类别只允许手动估值。"""
+    return ALLOWED_VALUATION_MODES.get(category, (VALUATION_MANUAL,))
 
 BASE_CURRENCY = "CNY"
 CURRENCY_LABELS = {
@@ -112,6 +206,20 @@ class AccountItem(Base):
     market: Mapped[Optional[str]] = mapped_column(String(8))
     interest_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
     interest_start: Mapped[Optional[date]] = mapped_column(Date)
+    valuation_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'manual'")
+    )
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
+    unit: Mapped[Optional[str]] = mapped_column(String(8))
+    principal: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))
+    face_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))
+    maturity_date: Mapped[Optional[date]] = mapped_column(Date)
+    pay_frequency: Mapped[Optional[str]] = mapped_column(String(16))
+    compounding: Mapped[Optional[str]] = mapped_column(String(8))
+    early_withdraw_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3))
+    price_source: Mapped[Optional[str]] = mapped_column(String(120))
+    next_valuation: Mapped[Optional[date]] = mapped_column(Date)
+    asset_meta: Mapped[Optional[dict]] = mapped_column(JSON)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
@@ -128,11 +236,17 @@ class AccountItem(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    cash_flows: Mapped[List["CashFlow"]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         UniqueConstraint("account_id", "name", name="uq_item_account_name"),
         CheckConstraint(
-            "category IN ('fixed_asset','cash','stock','bond','fund','other_asset',"
+            "category IN ('fixed_asset','cash','stock','bond','fund','gold','silver',"
+            "'commodity','crypto','other_asset',"
             "'short_term_debt','long_term_debt','other_liability')",
             name="ck_item_category",
         ),
@@ -265,4 +379,47 @@ class PositionLot(Base):
         CheckConstraint("unit_cost >= 0", name="ck_lot_unit_cost_nonnegative"),
         CheckConstraint("fee >= 0", name="ck_lot_fee_nonnegative"),
         Index("ix_position_lots_item_date", "item_id", "trade_date"),
+    )
+
+
+class CashFlow(Base):
+    """子项现金流：利息、分红、租金、费用、买卖与转入转出。
+
+    金额始终以正数保存，方向由 flow_type 表达；市值与收益因此可以分离。
+    """
+
+    __tablename__ = "cash_flows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("account_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    flow_date: Mapped[date] = mapped_column(Date, nullable=False)
+    flow_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default=text("'CNY'")
+    )
+    quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
+    unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6))
+    fee: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, server_default=text("0")
+    )
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+    item: Mapped[AccountItem] = relationship(back_populates="cash_flows")
+
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_flow_amount_nonnegative"),
+        CheckConstraint("fee >= 0", name="ck_flow_fee_nonnegative"),
+        CheckConstraint(
+            "flow_type IN (" + ",".join(f"'{name}'" for name in FLOW_TYPES) + ")",
+            name="ck_flow_type",
+        ),
+        Index("ix_cash_flows_item_date", "item_id", "flow_date"),
     )

@@ -321,7 +321,7 @@ QGroupBox::title {
     color: $text;
     background: $surface;
 }
-QScrollArea {
+QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {
     border: none;
     background: transparent;
 }

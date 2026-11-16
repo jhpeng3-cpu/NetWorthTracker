@@ -1,6 +1,6 @@
 # 财序（NetWorthTracker）
 
-个人资产负债记录与净资产追踪的 Windows 桌面应用。它不是日常消费记账工具，而是通过维护**账户 → 类别子项 → 估值快照**，计算净资产、资产分布、历史趋势与持仓盈亏；支持多币种、自动获取汇率与股票行情。
+个人资产负债记录与净资产追踪的 Windows 桌面应用。它不是日常消费记账工具，而是通过维护**账户 → 类别子项 → 估值快照**，计算净资产、资产分布、历史趋势与持仓盈亏；支持多币种、自动获取汇率，以及股票、基金、黄金白银与大宗商品行情。
 
 - Python 3.9+ / PySide6（原生 Qt 窗口）
 - SQLite（单文件，Python 内置）/ SQLAlchemy 2.x / Alembic
@@ -28,14 +28,16 @@ NetWorthTracker/
 │  ├─ db/
 │  │  ├─ engine.py            # Engine / Session、连接测试
 │  │  ├─ models.py            # accounts / account_items / valuation_snapshots
-│  │  │                       #   position_lots / exchange_rates / price_quotes
+│  │  │                       #   position_lots / cash_flows / exchange_rates / price_quotes
 │  │  └─ migrate.py           # 编程式执行 Alembic upgrade head
 │  ├─ services/
 │  │  ├─ accounts.py          # 账户与子项 CRUD、归档、总览（含现价）
 │  │  ├─ snapshots.py         # 单条/批量快照、冲突检测
 │  │  ├─ analytics.py         # 前向填充、净资产、分布、历史、拆解
 │  │  ├─ exchange_rates.py    # 汇率拉取、按日/最新汇率折算
-│  │  ├─ quotes.py            # 股票行情拉取、代码归一化、自动写入快照
+│  │  ├─ quotes/              # 行情适配器：股票/ETF、基金、黄金白银、大宗商品、汇率
+│  │  ├─ valuation/           # 按估值方式计息/行情/手动估值与批量刷新
+│  │  ├─ cash_flows.py        # 利息、分红、租金、费用与买卖流水
 │  │  ├─ profit.py            # 成本批次、市值/盈亏、区间盈亏
 │  │  ├─ csv_io.py            # CSV 导入导出与校验
 │  │  └─ backup.py            # SQLite 在线备份
@@ -104,7 +106,7 @@ alembic downgrade base
 ### 账户与子项
 
 - `accounts`：名称全局唯一；`side` 为 `asset` / `liability`；归档账户保留历史但不计入净资产。
-- `account_items`：账户下的类别子项（如证券账户下的现金 / 股票 / 债券），每个子项单独设置币种；类别为「股票」时可填股票代码与市场（`CN` / `HK` / `US`），市场按代码自动识别。
+- `account_items`：账户下的类别子项（如证券账户下的现金 / 股票 / 债券），每个子项单独设置币种；类别包括现金、股票、债券、基金、黄金、白银、大宗商品、加密资产、固定资产与其他资产，不同类别可选的估值方式不同；行情类子项可填代码与市场（`CN` / `HK` / `US` / 基金 / 黄金 / 白银 / 大宗商品），市场按代码自动识别。
 - `valuation_snapshots`：以**子项**为单位、按日期保存估值，`UNIQUE(item_id, snapshot_date)`；同一天重复录入会提示是否覆盖。
 - `position_lots`：成本批次（买入日期、数量、单价、手续费、币种），用于计算市值、盈亏与区间收益。
 - `exchange_rates`：各币种兑人民币的每日汇率，`UNIQUE(currency_code, rate_date)`。
@@ -147,7 +149,7 @@ alembic downgrade base
 | 子项管理 | 子项名称、币种、类别、股票代码 | 仅「股票」显示代码；多币种各自折算 |
 | 估值录入 | 选中子项录入，或账户内批量录入 | 同日重复提示覆盖；即时刷新各页面 |
 | 汇率刷新 | 账户管理点「刷新」 | 汇率条更新，账户估值同步变化 |
-| 股票行情 | 子项填代码后自动/手动刷新 | 显示现价与实时市值；当日自动写入快照 |
+| 行情刷新 | 股票/ETF、公募基金、黄金、白银、原油/铜/天然气 | 显示现价与市值；失败回退缓存并提示「行情已过期」 |
 | 仪表盘 | 卡片、分布环形图、净资产曲线 | 净资产在前；类别可切币种拆分；区间/粒度切换 |
 | 盈亏分析 | 累计与区间视图，双击编辑成本批次 | 盈亏额/率按成本币种；区间口径正确 |
 | 历史明细 | 按账户和日期筛选，编辑/删除 | 修改后图表同步；日期冲突有提示 |

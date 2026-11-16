@@ -1,16 +1,13 @@
-"""股票/基金行情：代码归一化、免费接口拉取、缓存与自动写入估值快照。
+"""股票 / ETF 行情适配：A 股、港股、美股。
 
-数据源均为免费、无需 API Key 的公开接口，按市场依次回退：
+数据源按市场依次回退：
 - A 股：腾讯 → 东方财富 → 新浪
 - 港股：腾讯 → 东方财富 → 新浪
 - 美股：腾讯 → 新浪
-
-行情只保留每个代码最新一条；开盘期间由界面定时刷新。
 """
 from __future__ import annotations
 
 import json
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -22,24 +19,19 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     Account,
     AccountItem,
-    PositionLot,
     PriceQuote,
+    PositionLot,
     ValuationSnapshot,
 )
 from app.services import exchange_rates
+from app.services.quotes.base import QuoteError, http_get, to_price
 
-HTTP_TIMEOUT = 8
-UA = "Mozilla/5.0 NetWorthTracker"
 CENT = Decimal("0.01")
 
 MARKET_CURRENCY = {"CN": "CNY", "HK": "HKD", "US": "USD"}
 
 TENCENT_PREFIX = {"CN": None, "HK": "hk", "US": "us"}
 EASTMONEY_SECID = {"CN": None, "HK": "116", "US": None}
-
-
-class QuoteError(Exception):
-    """单个代码所有行情源都失败。"""
 
 
 @dataclass(frozen=True)
@@ -87,31 +79,12 @@ def normalize_symbol(
     return text, clean_market or "CN"
 
 
-def _http_get(url: str, referer: Optional[str] = None) -> bytes:
-    headers = {"User-Agent": UA}
-    if referer:
-        headers["Referer"] = referer
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-        return response.read()
-
-
-def _to_price(value: object) -> Optional[Decimal]:
-    try:
-        price = Decimal(str(value))
-    except Exception:  # noqa: BLE001
-        return None
-    if price <= 0:
-        return None
-    return price
-
-
 def _fetch_tencent(symbol: str, market: str) -> Quote:
     if market == "CN":
         code = ("sh" if symbol.startswith(("6", "9")) else "sz") + symbol
     else:
         code = TENCENT_PREFIX[market] + symbol
-    payload = _http_get(f"https://qt.gtimg.cn/q={code}").decode(
+    payload = http_get(f"https://qt.gtimg.cn/q={code}").decode(
         "gbk", errors="ignore"
     )
     if '"' not in payload:
@@ -120,7 +93,7 @@ def _fetch_tencent(symbol: str, market: str) -> Quote:
     parts = body.split("~")
     if len(parts) < 4:
         raise QuoteError("腾讯行情格式异常")
-    price = _to_price(parts[3])
+    price = to_price(parts[3])
     if price is None:
         raise QuoteError("腾讯行情价格无效")
     return Quote(
@@ -148,13 +121,13 @@ def _fetch_eastmoney(symbol: str, market: str) -> Quote:
         "https://push2.eastmoney.com/api/qt/stock/get"
         f"?secid={secid}&fields=f43,f57,f58,f59"
     )
-    payload = json.loads(_http_get(url).decode("utf-8", errors="ignore"))
+    payload = json.loads(http_get(url).decode("utf-8", errors="ignore"))
     data = payload.get("data") or {}
     raw_price = data.get("f43")
     decimals = data.get("f59")
     if raw_price in (None, "-", 0) or decimals in (None, "-"):
         raise QuoteError("东方财富行情为空")
-    price = _to_price(Decimal(str(raw_price)) / (Decimal(10) ** int(decimals)))
+    price = to_price(Decimal(str(raw_price)) / (Decimal(10) ** int(decimals)))
     if price is None:
         raise QuoteError("东方财富行情价格无效")
     return Quote(
@@ -175,7 +148,7 @@ def _fetch_sina(symbol: str, market: str) -> Quote:
         code = "hk" + symbol
     else:
         code = "gb_" + symbol.lower()
-    payload = _http_get(
+    payload = http_get(
         f"https://hq.sinajs.cn/list={code}", referer="https://finance.sina.com.cn"
     ).decode("gbk", errors="ignore")
     if '"' not in payload:
@@ -191,7 +164,7 @@ def _fetch_sina(symbol: str, market: str) -> Quote:
             name, raw_price = parts[0], parts[1]
     except IndexError as exc:
         raise QuoteError("新浪行情格式异常") from exc
-    price = _to_price(raw_price)
+    price = to_price(raw_price)
     if price is None:
         raise QuoteError("新浪行情价格无效")
     return Quote(

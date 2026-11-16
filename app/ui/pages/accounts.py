@@ -35,6 +35,7 @@ from app.services import interest as interest_service
 from app.services import profit
 from app.services import quotes
 from app.services import snapshots as snapshot_service
+from app.services import valuation
 from app.services.accounts import AccountOverview, ItemInput, ItemOverview
 from app.services.profit import CostSummary
 from app.services.snapshots import SnapshotExistsError
@@ -83,6 +84,7 @@ class AccountsPage(BasePage):
         self._costs: Dict[int, CostSummary] = {}
         self._interest: Dict[int, interest_service.InterestRow] = {}
         self._display_code = "CNY"
+        self._last_refresh_note = ""
         self._build_ui()
         self.refresh()
 
@@ -350,12 +352,15 @@ class AccountsPage(BasePage):
         self._append_rate_button()
 
     def _append_rate_button(self) -> None:
-        self.refresh_rates_button = QPushButton("刷新")
+        self.refresh_rates_button = QPushButton("刷新行情")
         self.refresh_rates_button.setToolTip(
-            "立即刷新汇率，并拉取已配置股票代码的最新行情、写入当日估值"
+            "刷新汇率并按估值方式生成当日快照：行情自动、计息增值、手动估值"
         )
         self.refresh_rates_button.clicked.connect(self._refresh_all)
         self.rate_strip_layout.addWidget(self.refresh_rates_button)
+        self.refresh_status = QLabel(self._last_refresh_note)
+        self.refresh_status.setObjectName("Hint")
+        self.rate_strip_layout.addWidget(self.refresh_status)
 
     def _refresh_all(self) -> None:
         if not db.is_configured:
@@ -368,25 +373,40 @@ class AccountsPage(BasePage):
             with db.session_scope() as session:
                 try:
                     exchange_rates.refresh_rates(session)
-                except Exception as exc:  # noqa: BLE001 - 汇率失败仍继续拉行情
+                except Exception as exc:  # noqa: BLE001 - 汇率失败仍继续估值
                     rate_error = str(exc)
-                result = quotes.refresh_stock_quotes(session)
-            return rate_error, result
+                report = valuation.refresh_all(session)
+            return rate_error, report
 
         def success(payload):
-            rate_error, result = payload
+            rate_error, report = payload
+            self._last_refresh_note = (
+                f"成功 {report.updated} · 跳过 {report.skipped} · 失败 {report.failed}"
+            )
+            if report.stale:
+                self._last_refresh_note += f" · 过期 {report.stale}"
             self._after_change()
+            failed = [
+                f"· {row.account_name} / {row.item_name}：{row.message}"
+                for row in report.outcomes
+                if row.status == "failed"
+            ]
+            stale = [
+                f"· {row.account_name} / {row.item_name}：行情已过期，使用缓存价"
+                for row in report.outcomes
+                if row.status == "updated" and row.stale
+            ]
             problems = []
             if rate_error:
                 problems.append(f"汇率：{rate_error}")
-            if result.failed:
-                problems.append("\n".join(result.errors[:6]))
+            problems.extend(failed[:10])
+            problems.extend(stale[:10])
             if problems:
-                show_warning(self, "部分数据刷新失败", "\n".join(problems))
+                show_warning(self, "部分数据刷新异常", "\n".join(problems))
 
         def failure(message: str):
-            self.refresh_rates_button.setEnabled(True)
-            self.refresh_rates_button.setText("刷新")
+            self._last_refresh_note = "刷新失败"
+            self.refresh()
             show_warning(self, "刷新失败", message)
 
         run_async(task, success, failure)
@@ -572,13 +592,17 @@ class AccountsPage(BasePage):
                         rate_text = fmt_percent(
                             pnl / summary.total_cost * Decimal("100"), show_sign=True
                         )
+            if item.price is not None and not item.symbol and item.currency != "CNY":
+                price_text = f"{symbol_for('CNY', self.symbol)}{item.price:,.4f}"
+            else:
+                price_text = fmt_money(
+                    item.price,
+                    symbol_for(item.price_currency or item.currency, self.symbol),
+                )
             values = [
                 item.name,
                 item.category_label,
-                fmt_money(
-                    item.price,
-                    symbol_for(item.price_currency or item.currency, self.symbol),
-                ),
+                price_text,
                 fmt_money(item.latest_value, symbol),
                 cny_text,
                 pnl_text,
@@ -616,6 +640,16 @@ class AccountsPage(BasePage):
                             f"{item.symbol}（{item.market}）{item.price_currency}"
                             f" · 报价时间 {tail}"
                         )
+                elif column == 2 and item.price is not None and not item.symbol:
+                    tail = (
+                        item.price_at.strftime("%Y-%m-%d")
+                        if item.price_at
+                        else "最新"
+                    )
+                    cell.setToolTip(
+                        f"{item.currency} 最新汇率 · "
+                        f"1 {item.currency} = {item.price:.4f} CNY · {tail}"
+                    )
                 elif column == 5 and tooltip:
                     cell.setToolTip(tooltip)
                 elif column == 7 and interest_tooltip:
@@ -760,9 +794,13 @@ class AccountsPage(BasePage):
 
     # ---- 账户操作 ----
     @staticmethod
-    def _to_item_inputs(payload: Dict[str, object]) -> List[ItemInput]:
+    def _to_item_inputs(
+        payload: Dict[str, object], overview: Optional[AccountOverview] = None
+    ) -> List[ItemInput]:
+        existing = {item.id: item for item in overview.items} if overview else {}
         result: List[ItemInput] = []
         for spec in payload.get("items") or []:
+            base = existing.get(spec.get("id"))
             result.append(
                 ItemInput(
                     id=spec.get("id"),
@@ -772,6 +810,18 @@ class AccountsPage(BasePage):
                     symbol=str(spec.get("symbol") or "") or None,
                     interest_rate=spec.get("interest_rate"),
                     interest_start=spec.get("interest_start"),
+                    valuation_mode=base.valuation_mode if base else None,
+                    quantity=base.quantity if base else None,
+                    unit=base.unit if base else None,
+                    principal=base.principal if base else None,
+                    face_value=base.face_value if base else None,
+                    maturity_date=base.maturity_date if base else None,
+                    pay_frequency=base.pay_frequency if base else None,
+                    compounding=base.compounding if base else None,
+                    early_withdraw_rate=base.early_withdraw_rate if base else None,
+                    price_source=base.price_source if base else None,
+                    next_valuation=base.next_valuation if base else None,
+                    asset_meta=base.asset_meta if base else None,
                 )
             )
         return result
@@ -808,7 +858,7 @@ class AccountsPage(BasePage):
                     overview.id,
                     name=str(payload["name"]),
                     side=str(payload["side"]),
-                    items=self._to_item_inputs(payload),
+                    items=self._to_item_inputs(payload, overview),
                     currency=str(payload["currency"]),
                     note=str(payload["note"]),
                 )
@@ -888,8 +938,21 @@ class AccountsPage(BasePage):
                 category=item.category,
                 currency=item.currency,
                 symbol=item.symbol or None,
+                market=item.market or None,
                 interest_rate=item.interest_rate,
                 interest_start=item.interest_start,
+                valuation_mode=item.valuation_mode,
+                quantity=item.quantity,
+                unit=item.unit or None,
+                principal=item.principal,
+                face_value=item.face_value,
+                maturity_date=item.maturity_date,
+                pay_frequency=item.pay_frequency,
+                compounding=item.compounding,
+                early_withdraw_rate=item.early_withdraw_rate,
+                price_source=item.price_source or None,
+                next_valuation=item.next_valuation,
+                asset_meta=item.asset_meta,
             )
             for item in overview.items
         ]
@@ -907,6 +970,7 @@ class AccountsPage(BasePage):
         if not dialog.exec():
             return
         name, category, symbol, interest_rate, interest_start = dialog.values()
+        valuation = dialog.valuation_values()
         items = self._base_items(overview)
         items.append(
             ItemInput(
@@ -916,6 +980,7 @@ class AccountsPage(BasePage):
                 symbol=symbol or None,
                 interest_rate=interest_rate,
                 interest_start=interest_start,
+                **valuation,
             )
         )
         self._save_items(overview, items)
@@ -961,34 +1026,63 @@ class AccountsPage(BasePage):
             symbol=current.symbol,
             interest_rate=current.interest_rate,
             interest_start=current.interest_start,
+            valuation_mode=current.valuation_mode,
+            quantity=current.quantity,
+            unit=current.unit,
+            principal=current.principal,
+            face_value=current.face_value,
+            maturity_date=current.maturity_date,
+            pay_frequency=current.pay_frequency,
+            compounding=current.compounding,
+            early_withdraw_rate=current.early_withdraw_rate,
+            price_source=current.price_source,
+            next_valuation=current.next_valuation,
+            asset_meta=current.asset_meta,
         )
         if not dialog.exec():
             return
         name, category, symbol, interest_rate, interest_start = dialog.values()
-        items = [
-            ItemInput(
-                id=item.id,
-                name=name if item.id == current.id else item.name,
-                category=category if item.id == current.id else item.category,
-                currency=(
-                    dialog.currency_value()
-                    if item.id == current.id
-                    else item.currency
-                ),
-                symbol=(
-                    symbol or None
-                    if item.id == current.id
-                    else (item.symbol or None)
-                ),
-                interest_rate=(
-                    interest_rate if item.id == current.id else item.interest_rate
-                ),
-                interest_start=(
-                    interest_start if item.id == current.id else item.interest_start
-                ),
-            )
-            for item in overview.items
-        ]
+        valuation = dialog.valuation_values()
+        items: List[ItemInput] = []
+        for item in overview.items:
+            if item.id == current.id:
+                items.append(
+                    ItemInput(
+                        id=item.id,
+                        name=name,
+                        category=category,
+                        currency=dialog.currency_value(),
+                        symbol=symbol or None,
+                        interest_rate=interest_rate,
+                        interest_start=interest_start,
+                        **valuation,
+                    )
+                )
+            else:
+                items.append(
+                    ItemInput(
+                        id=item.id,
+                        name=item.name,
+                        category=item.category,
+                        currency=item.currency,
+                        symbol=item.symbol or None,
+                        market=item.market or None,
+                        interest_rate=item.interest_rate,
+                        interest_start=item.interest_start,
+                        valuation_mode=item.valuation_mode,
+                        quantity=item.quantity,
+                        unit=item.unit or None,
+                        principal=item.principal,
+                        face_value=item.face_value,
+                        maturity_date=item.maturity_date,
+                        pay_frequency=item.pay_frequency,
+                        compounding=item.compounding,
+                        early_withdraw_rate=item.early_withdraw_rate,
+                        price_source=item.price_source or None,
+                        next_valuation=item.next_valuation,
+                        asset_meta=item.asset_meta,
+                    )
+                )
         try:
             with db.session_scope() as session:
                 account_service.update_account(

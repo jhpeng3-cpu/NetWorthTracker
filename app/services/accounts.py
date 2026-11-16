@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -17,14 +18,20 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     CATEGORY_LABELS,
     CATEGORIES_BY_SIDE,
+    COMPOUNDING_MODES,
     CURRENCY_CODES,
     CURRENCY_LABELS,
+    PAY_FREQUENCIES,
     SIDE_LABELS,
+    VALUATION_MANUAL,
+    VALUATION_MODE_LABELS,
     Account,
     AccountItem,
     ValuationSnapshot,
+    allowed_valuation_modes,
+    default_valuation_mode,
 )
-from app.services import quotes
+from app.services import exchange_rates, quotes
 from app.utils.exceptions import AppError, AppValidationError
 
 
@@ -53,6 +60,18 @@ class ItemInput:
     market: Optional[str] = None
     interest_rate: Optional[Decimal] = None
     interest_start: Optional[date] = None
+    valuation_mode: Optional[str] = None
+    quantity: Optional[Decimal] = None
+    unit: Optional[str] = None
+    principal: Optional[Decimal] = None
+    face_value: Optional[Decimal] = None
+    maturity_date: Optional[date] = None
+    pay_frequency: Optional[str] = None
+    compounding: Optional[str] = None
+    early_withdraw_rate: Optional[Decimal] = None
+    price_source: Optional[str] = None
+    next_valuation: Optional[date] = None
+    asset_meta: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +90,18 @@ class ItemOverview:
     price_at: Optional[datetime] = None
     interest_rate: Optional[Decimal] = None
     interest_start: Optional[date] = None
+    valuation_mode: str = VALUATION_MANUAL
+    quantity: Optional[Decimal] = None
+    unit: str = ""
+    principal: Optional[Decimal] = None
+    face_value: Optional[Decimal] = None
+    maturity_date: Optional[date] = None
+    pay_frequency: str = "none"
+    compounding: str = "simple"
+    early_withdraw_rate: Optional[Decimal] = None
+    price_source: str = ""
+    next_valuation: Optional[date] = None
+    asset_meta: Optional[dict] = None
 
     @property
     def category_label(self) -> str:
@@ -148,11 +179,9 @@ def _clean_fields(name: str, side: str, currency: str, note: str) -> tuple:
 
 
 def _clean_interest(
-    side: str, rate: Optional[Decimal], start: Optional[date]
+    rate: Optional[Decimal], start: Optional[date]
 ) -> tuple:
-    """负债子项的年利率与计息起始日；资产子项忽略这两个字段。"""
-    if side != "liability":
-        return None, None
+    """年利率与计息起始日（资产计息、负债利息共用）；未填写时均为 None。"""
     if rate is None or str(rate).strip() == "":
         if start is not None:
             raise AccountValidationError("填写计息起始日前，请先填写年利率。")
@@ -169,6 +198,95 @@ def _clean_interest(
         value.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP),
         start,
     )
+
+
+def _optional_decimal(
+    value: object,
+    field: str,
+    digits: str,
+    minimum: Optional[Decimal] = None,
+    maximum: Optional[Decimal] = None,
+) -> Optional[Decimal]:
+    """把可选数值规范为指定小数位，空值返回 None。"""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise AccountValidationError(f"{field}必须是数字。") from None
+    if not number.is_finite():
+        raise AccountValidationError(f"{field}必须是有效数字。")
+    if minimum is not None and number < minimum:
+        raise AccountValidationError(f"{field}不能小于 {minimum}。")
+    if maximum is not None and number > maximum:
+        raise AccountValidationError(f"{field}不能大于 {maximum}。")
+    return number.quantize(Decimal(digits), rounding=ROUND_HALF_UP)
+
+
+def _clean_valuation(side: str, spec: "ItemInput") -> dict:
+    """校验并规范化估值模式及其扩展参数。"""
+    mode = (spec.valuation_mode or default_valuation_mode(spec.category)).strip()
+    allowed = allowed_valuation_modes(spec.category)
+    if side != "asset":
+        mode = VALUATION_MANUAL
+        allowed = (VALUATION_MANUAL,)
+    if mode not in allowed:
+        labels = "、".join(VALUATION_MODE_LABELS[item] for item in allowed)
+        raise AccountValidationError(
+            f"{CATEGORY_LABELS.get(spec.category, spec.category)}仅支持：{labels}。"
+        )
+
+    unit = (spec.unit or "").strip()
+    if len(unit) > 8:
+        raise AccountValidationError("单位不能超过 8 个字符。")
+
+    pay_frequency = (spec.pay_frequency or "none").strip()
+    if pay_frequency not in PAY_FREQUENCIES:
+        raise AccountValidationError("付息方式不合法。")
+
+    compounding = (spec.compounding or "simple").strip()
+    if compounding not in COMPOUNDING_MODES:
+        raise AccountValidationError("计息方式必须是单利或复利。")
+
+    price_source = (spec.price_source or "").strip()
+    if len(price_source) > 120:
+        raise AccountValidationError("行情源标识不能超过 120 个字符。")
+
+    asset_meta = spec.asset_meta
+    if asset_meta is not None:
+        if not isinstance(asset_meta, dict):
+            raise AccountValidationError("扩展参数必须是键值对象。")
+        try:
+            json.dumps(asset_meta, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raise AccountValidationError("扩展参数包含无法保存的内容。") from None
+
+    return {
+        "valuation_mode": mode,
+        "quantity": _optional_decimal(
+            spec.quantity, "数量", "0.0001", Decimal("0")
+        ),
+        "unit": unit or None,
+        "principal": _optional_decimal(
+            spec.principal, "本金", "0.01", Decimal("0")
+        ),
+        "face_value": _optional_decimal(
+            spec.face_value, "面值", "0.01", Decimal("0")
+        ),
+        "maturity_date": spec.maturity_date,
+        "pay_frequency": None if pay_frequency == "none" else pay_frequency,
+        "compounding": None if compounding == "simple" else compounding,
+        "early_withdraw_rate": _optional_decimal(
+            spec.early_withdraw_rate,
+            "提前支取利率",
+            "0.001",
+            Decimal("0"),
+            Decimal("100"),
+        ),
+        "price_source": price_source or None,
+        "next_valuation": spec.next_valuation,
+        "asset_meta": asset_meta or None,
+    }
 
 
 def _clean_items(
@@ -193,12 +311,13 @@ def _clean_items(
                 f"{CURRENCY_LABELS[code]}（{code}）" for code in CURRENCY_CODES
             )
             raise AccountValidationError(f"子项币种仅支持：{allowed}。")
-        symbol, market = quotes.normalize_symbol(
-            spec.symbol or "", spec.market or ""
+        symbol, market = quotes.resolve_market(
+            spec.symbol or "", spec.market or "", spec.category
         )
         interest_rate, interest_start = _clean_interest(
-            side, spec.interest_rate, spec.interest_start
+            spec.interest_rate, spec.interest_start
         )
+        valuation = _clean_valuation(side, spec)
         cleaned.append(
             ItemInput(
                 name=name,
@@ -209,11 +328,37 @@ def _clean_items(
                 market=market or None,
                 interest_rate=interest_rate,
                 interest_start=interest_start,
+                **valuation,
             )
         )
     if not cleaned:
         raise AccountValidationError("每个账户至少需要一个类别子项。")
     return cleaned
+
+
+def _item_columns(spec: ItemInput) -> dict:
+    """把清理后的 ItemInput 转成 AccountItem 字段。"""
+    return {
+        "name": spec.name,
+        "category": spec.category,
+        "currency": spec.currency,
+        "symbol": spec.symbol or None,
+        "market": spec.market or None,
+        "interest_rate": spec.interest_rate,
+        "interest_start": spec.interest_start,
+        "valuation_mode": spec.valuation_mode or VALUATION_MANUAL,
+        "quantity": spec.quantity,
+        "unit": spec.unit,
+        "principal": spec.principal,
+        "face_value": spec.face_value,
+        "maturity_date": spec.maturity_date,
+        "pay_frequency": spec.pay_frequency,
+        "compounding": spec.compounding,
+        "early_withdraw_rate": spec.early_withdraw_rate,
+        "price_source": spec.price_source,
+        "next_valuation": spec.next_valuation,
+        "asset_meta": spec.asset_meta,
+    }
 
 
 def _is_unique_violation(exc: IntegrityError) -> bool:
@@ -255,6 +400,18 @@ def list_overviews(session: Session, include_archived: bool = False) -> List[Acc
             AccountItem.market,
             AccountItem.interest_rate,
             AccountItem.interest_start,
+            AccountItem.valuation_mode,
+            AccountItem.quantity,
+            AccountItem.unit,
+            AccountItem.principal,
+            AccountItem.face_value,
+            AccountItem.maturity_date,
+            AccountItem.pay_frequency,
+            AccountItem.compounding,
+            AccountItem.early_withdraw_rate,
+            AccountItem.price_source,
+            AccountItem.next_valuation,
+            AccountItem.asset_meta,
             ranked.c.value,
             ranked.c.snapshot_date,
         )
@@ -263,11 +420,25 @@ def list_overviews(session: Session, include_archived: bool = False) -> List[Acc
     ).all()
 
     quote_map = quotes.latest_quotes(session)
+    rate_map = exchange_rates.latest_rates(session)
     items_by_account: Dict[int, List[ItemOverview]] = {}
     for row in item_rows:
         symbol = row.symbol or ""
         market = row.market or ""
-        quote = quote_map.get((symbol, market)) if symbol else None
+        lookup_market = market or (
+            quotes.resolve_market(symbol, market, row.category)[1] if symbol else ""
+        )
+        quote = quote_map.get((symbol, lookup_market)) if symbol else None
+        price = quote.price if quote else None
+        price_currency = quote.currency if quote else ""
+        price_at = quote.quote_time if quote else None
+        if quote is None and not symbol and row.currency != "CNY":
+            rate_entry = rate_map.get(row.currency)
+            if rate_entry is not None:
+                rate_day, rate_value = rate_entry
+                price = rate_value
+                price_currency = "CNY"
+                price_at = datetime.combine(rate_day, datetime.min.time())
         items_by_account.setdefault(row.account_id, []).append(
             ItemOverview(
                 id=row.id,
@@ -279,11 +450,23 @@ def list_overviews(session: Session, include_archived: bool = False) -> List[Acc
                 currency=row.currency,
                 symbol=symbol,
                 market=market,
-                price=quote.price if quote else None,
-                price_currency=quote.currency if quote else "",
-                price_at=quote.quote_time if quote else None,
+                price=price,
+                price_currency=price_currency,
+                price_at=price_at,
                 interest_rate=row.interest_rate,
                 interest_start=row.interest_start,
+                valuation_mode=row.valuation_mode or VALUATION_MANUAL,
+                quantity=row.quantity,
+                unit=row.unit or "",
+                principal=row.principal,
+                face_value=row.face_value,
+                maturity_date=row.maturity_date,
+                pay_frequency=row.pay_frequency or "none",
+                compounding=row.compounding or "simple",
+                early_withdraw_rate=row.early_withdraw_rate,
+                price_source=row.price_source or "",
+                next_valuation=row.next_valuation,
+                asset_meta=row.asset_meta,
             )
         )
 
@@ -354,16 +537,7 @@ def create_account(
         archived=False,
     )
     account.items = [
-        AccountItem(
-            name=spec.name,
-            category=spec.category,
-            currency=spec.currency or clean_currency,
-            symbol=spec.symbol or None,
-            market=spec.market or None,
-            interest_rate=spec.interest_rate,
-            interest_start=spec.interest_start,
-            sort_order=index,
-        )
+        AccountItem(sort_order=index, **_item_columns(spec))
         for index, spec in enumerate(clean_items)
     ]
     session.add(account)
@@ -402,25 +576,11 @@ def update_account(
         current = existing.get(spec.id) if spec.id else None
         if current is None:
             account.items.append(
-                AccountItem(
-                    name=spec.name,
-                    category=spec.category,
-                    currency=spec.currency or clean_currency,
-                    symbol=spec.symbol or None,
-                    market=spec.market or None,
-                    interest_rate=spec.interest_rate,
-                    interest_start=spec.interest_start,
-                    sort_order=index,
-                )
+                AccountItem(sort_order=index, **_item_columns(spec))
             )
         else:
-            current.name = spec.name
-            current.category = spec.category
-            current.currency = spec.currency or current.currency
-            current.symbol = spec.symbol or None
-            current.market = spec.market or None
-            current.interest_rate = spec.interest_rate
-            current.interest_start = spec.interest_start
+            for key, value in _item_columns(spec).items():
+                setattr(current, key, value)
             current.sort_order = index
             kept.add(current.id)
     for item_id, item in existing.items():

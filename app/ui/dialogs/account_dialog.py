@@ -6,14 +6,17 @@ from typing import Callable, Dict, List, Optional, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -51,9 +54,19 @@ class AccountDialog(QDialog):
             self._fill(account)
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 18)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(22, 18, 22, 12)
         layout.setSpacing(12)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("例如：招商银行活期、证券账户、住房按揭")
@@ -113,18 +126,38 @@ class AccountDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
+        footer = QWidget(self)
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(22, 10, 22, 16)
+        footer_layout.setSpacing(8)
+        footer_layout.addStretch(1)
         cancel = QPushButton("取消")
         cancel.clicked.connect(self.reject)
         save = primary_button("保存")
         save.clicked.connect(self._submit)
-        buttons.addWidget(cancel)
-        buttons.addWidget(save)
-        layout.addLayout(buttons)
+        footer_layout.addWidget(cancel)
+        footer_layout.addWidget(save)
+        outer.addWidget(footer)
 
         if self._account is None:
             self._add_item_row()
+        self._resize_for_screen(content)
+
+    def _resize_for_screen(self, content: QWidget) -> None:
+        """限制窗口高度，内容超出时使用滚动区。"""
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        if screen is None:
+            self.resize(620, 560)
+            return
+        available = screen.availableGeometry()
+        width = min(620, int(available.width() * 0.92))
+        height = min(
+            content.sizeHint().height() + 90,
+            int(available.height() * 0.85),
+        )
+        self.setMaximumHeight(int(available.height() * 0.9))
+        self.resize(max(width, 480), max(height, 360))
 
     def _current_side(self) -> str:
         return self.side_combo.currentData() or SIDE_ASSET
