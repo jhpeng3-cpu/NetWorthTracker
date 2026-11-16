@@ -31,6 +31,14 @@ from app.ui.styles import palette
 from app.utils.async_task import run_async
 
 
+def _format_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 class SettingsPage(BasePage):
     settings_changed = Signal()
     database_settings_requested = Signal()
@@ -42,7 +50,7 @@ class SettingsPage(BasePage):
         self.refresh_db_info()
 
     def _build_ui(self) -> None:
-        self.add_header("设置", "显示偏好保存在 config.ini；数据库连接可随时修改。")
+        self.add_header("设置", "显示偏好保存在 config.ini；数据库文件可随时更换。")
 
         # 内容较多，放进滚动区，避免窗口较矮时汇率行被挤压重叠。
         scroll = QScrollArea()
@@ -90,7 +98,7 @@ class SettingsPage(BasePage):
         dir_layout.addWidget(self.backup_dir_edit, 1)
         dir_layout.addWidget(browse)
         backup_form.addRow("备份目录", dir_row)
-        backup_hint = QLabel("自动备份依赖 PATH 中的 mysqldump；失败不会影响应用启动。")
+        backup_hint = QLabel("备份会通过 SQLite 在线备份生成 .db 副本；失败不会影响应用启动。")
         backup_hint.setObjectName("Hint")
         backup_form.addRow("", backup_hint)
         layout.addWidget(backup_group)
@@ -120,27 +128,22 @@ class SettingsPage(BasePage):
         rate_layout.addLayout(rate_row)
         layout.addWidget(rate_group)
 
-        database_group = QGroupBox("数据库连接")
+        database_group = QGroupBox("数据库文件")
         database_layout = QVBoxLayout(database_group)
         database_layout.setContentsMargins(0, 0, 0, 0)
         database_layout.setSpacing(8)
         self.db_form = QFormLayout()
         self.db_form.setSpacing(7)
-        self.db_host_label = QLabel("—")
-        self.db_port_label = QLabel("—")
-        self.db_name_label = QLabel("—")
-        self.db_user_label = QLabel("—")
-        self.db_password_label = QLabel("—")
+        self.db_path_label = QLabel("—")
+        self.db_path_label.setWordWrap(True)
+        self.db_size_label = QLabel("—")
         self.db_status_label = QLabel("—")
-        self.db_form.addRow("主机", self.db_host_label)
-        self.db_form.addRow("端口", self.db_port_label)
-        self.db_form.addRow("数据库", self.db_name_label)
-        self.db_form.addRow("用户名", self.db_user_label)
-        self.db_form.addRow("密码", self.db_password_label)
+        self.db_form.addRow("文件", self.db_path_label)
+        self.db_form.addRow("大小", self.db_size_label)
         self.db_form.addRow("状态", self.db_status_label)
         database_layout.addLayout(self.db_form)
         db_buttons = QHBoxLayout()
-        db_button = QPushButton("数据库设置…")
+        db_button = QPushButton("更换数据库文件…")
         db_button.clicked.connect(self.database_settings_requested.emit)
         db_buttons.addWidget(db_button)
         db_buttons.addStretch(1)
@@ -179,11 +182,14 @@ class SettingsPage(BasePage):
 
     def refresh_db_info(self) -> None:
         settings = self.config.db_settings()
-        self.db_host_label.setText(settings.host or "—")
-        self.db_port_label.setText(str(settings.port))
-        self.db_name_label.setText(settings.database or "—")
-        self.db_user_label.setText(settings.user or "—")
-        self.db_password_label.setText("******（已设置）" if settings.password else "（未设置）")
+        self.db_path_label.setText(settings.display())
+        path = settings.resolved_path()
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self.db_size_label.setText("文件尚未创建")
+        else:
+            self.db_size_label.setText(_format_size(size))
         if db.is_configured:
             self.db_status_label.setText("已连接")
             self.db_status_label.setStyleSheet(

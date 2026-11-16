@@ -183,10 +183,6 @@ def ensure_lots(session, accounts: dict) -> None:
 
 def main() -> int:
     config = AppConfig()
-    if not config.has_database_config():
-        print("未找到数据库配置。请先启动应用并在“数据库设置”中完成配置，再运行 seed.py。")
-        return 1
-
     db.configure(config.db_settings())
     assert db.url is not None
     run_migrations(db.url)

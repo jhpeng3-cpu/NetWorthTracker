@@ -22,7 +22,7 @@ def _report_startup_failure() -> None:
     summary = lines[-1] if lines else "未知错误"
     try:
         ctypes.windll.user32.MessageBoxW(
-            0, f"程序启动失败：\n\n{summary}\n\n{note}", "净资产管理", 0x10
+            0, f"程序启动失败：\n\n{summary}\n\n{note}", "财序", 0x10
         )
     except Exception:  # noqa: BLE001
         print(detail, file=sys.stderr)
@@ -71,14 +71,15 @@ def main() -> int:
     setup_logging()
     install_global_exception_handler()
     app = QApplication(sys.argv)
-    app.setApplicationName("净资产管理")
+    app.setApplicationName("财序")
+    app.setApplicationDisplayName("财序")
     app.setOrganizationName("NetWorthTracker")
     app.setApplicationVersion(__version__)
 
     icon_path = bundle_dir() / "app" / "ui" / "assets" / "app.ico"
     if not getattr(sys, "frozen", False):
-        # 源码运行时优先使用项目根目录的图标，替换后无需重新转换
-        root_icon = Path(__file__).resolve().parent / "图标.png"
+        # 源码运行时优先使用项目根目录的 logo，替换后无需重新转换
+        root_icon = Path(__file__).resolve().parent / "logo.png"
         if root_icon.exists():
             icon_path = root_icon
     if icon_path.exists():
@@ -97,25 +98,23 @@ def main() -> int:
     install_titlebar_theme_filter(app)
     app.setStyleSheet(build_stylesheet(config.theme))
 
-    if not config.has_database_config():
-        dialog = DbConfigDialog(config, first_run=True)
+    db_settings = config.db_settings()
+    try:
+        db.configure(db_settings)
+        assert db.url is not None
+        run_migrations(db.url)
+        if not config.has_database_config():
+            config.save_db_settings(db_settings)
+    except Exception as exc:  # noqa: BLE001
+        db.dispose()
+        logging.getLogger(__name__).exception("启动连接数据库失败")
+        dialog = DbConfigDialog(
+            config,
+            first_run=not config.has_database_config(),
+            initial_error=f"无法打开数据库文件：{exc}",
+        )
         if not dialog.exec():
-            return 0
-    else:
-        try:
-            db.configure(config.db_settings())
-            assert db.url is not None
-            run_migrations(db.url)
-        except Exception as exc:  # noqa: BLE001
-            db.dispose()
-            logging.getLogger(__name__).exception("启动连接数据库失败")
-            dialog = DbConfigDialog(
-                config,
-                first_run=False,
-                initial_error=f"无法使用已保存的连接：{exc}",
-            )
-            if not dialog.exec():
-                return 1
+            return 1
 
     window = MainWindow(config)
     window.show()

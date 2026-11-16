@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig):
         super().__init__()
         self.config = config
-        self.setWindowTitle("净资产管理 · 个人资产负债表")
+        self.setWindowTitle("财序 · 个人资产负债表")
         self.setMinimumSize(1280, 800)
         self.resize(1380, 880)
         self._build_menu()
@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 20, 0, 16)
         sidebar_layout.setSpacing(0)
 
-        brand = QLabel("净资产管理")
+        brand = QLabel("财序")
         brand.setObjectName("Brand")
         brand.setContentsMargins(22, 0, 0, 0)
         brand_sub = QLabel("个人资产负债表 · 净资产追踪")
@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel(f"v{__version__}\nMySQL · 本地存储")
+        footer = QLabel(f"v{__version__}\nSQLite · 本地存储")
         footer.setObjectName("SidebarFooter")
         footer.setContentsMargins(22, 0, 10, 0)
         sidebar_layout.addWidget(footer)
@@ -220,15 +220,15 @@ class MainWindow(QMainWindow):
             self.settings_page.reload_from_config()
             self._update_db_status()
             self._refresh_rates()
-            self.statusBar().showMessage("数据库连接已更新", 4000)
+            self.statusBar().showMessage("数据库文件已更新", 4000)
 
     def _show_about(self) -> None:
         show_info(
             self,
-            "关于净资产管理",
-            f"净资产管理 v{__version__}\n\n"
+            "关于财序",
+            f"财序 v{__version__}\n\n"
             "个人资产负债记录与净资产追踪工具。\n"
-            "PySide6 · SQLAlchemy 2 · MySQL · Alembic · matplotlib\n\n"
+            "PySide6 · SQLAlchemy 2 · SQLite · Alembic · matplotlib\n\n"
             f"配置文件：{self.config.path}",
         )
 
@@ -240,8 +240,8 @@ class MainWindow(QMainWindow):
         if not directory:
             self.statusBar().showMessage("自动备份已开启，但未配置备份目录", 6000)
             return
-        if not backup.find_mysqldump():
-            self.statusBar().showMessage("自动备份跳过：未找到 mysqldump", 6000)
+        if not db.is_configured:
+            self.statusBar().showMessage("自动备份跳过：数据库尚未就绪", 6000)
             return
         target = Path(directory) / backup.default_backup_name()
         settings = self.config.db_settings()

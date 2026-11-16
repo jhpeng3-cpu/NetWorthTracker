@@ -1,4 +1,4 @@
-"""数据管理：CSV 导出/导入、mysqldump 备份。"""
+"""数据管理：CSV 导出/导入、SQLite 数据库备份。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,7 +39,7 @@ class DataPage(BasePage):
         self.refresh()
 
     def _build_ui(self) -> None:
-        self.add_header("数据管理", "导出 CSV、按模板导入快照，或使用 mysqldump 备份数据库。")
+        self.add_header("数据管理", "导出 CSV、按模板导入快照，或备份 SQLite 数据库文件。")
 
         export_group = QGroupBox("导出 CSV")
         export_layout = QVBoxLayout(export_group)
@@ -86,7 +86,7 @@ class DataPage(BasePage):
         self.dump_label.setObjectName("Muted")
         self.dump_label.setWordWrap(True)
         backup_layout.addWidget(self.dump_label)
-        auto_hint = QLabel("自动备份可在「设置」中开启；备份依赖本机 PATH 中的 mysqldump。")
+        auto_hint = QLabel("备份会生成独立的 .db 副本文件；自动备份可在「设置」中开启。")
         auto_hint.setObjectName("Hint")
         backup_layout.addWidget(auto_hint)
         backup_buttons = QHBoxLayout()
@@ -103,15 +103,18 @@ class DataPage(BasePage):
         self.root.addStretch(1)
 
     def refresh(self) -> None:
-        executable = backup.find_mysqldump()
-        if executable:
-            self.dump_label.setText(f"已检测到 mysqldump：{executable}")
-            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['success']};")
+        path = self.config.db_settings().resolved_path()
+        if not db.is_configured:
+            self.dump_label.setText("数据库尚未就绪，暂时无法备份。")
+            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['danger']};")
+            self.backup_button.setEnabled(False)
+            return
+        if path.exists():
+            self.dump_label.setText(f"当前数据库文件：{path}")
+            self.dump_label.setStyleSheet(f"color: {palette(self._theme)['muted']};")
             self.backup_button.setEnabled(True)
         else:
-            self.dump_label.setText(
-                "未在 PATH 中找到 mysqldump。请安装 MySQL 客户端并把 bin 目录加入 PATH。"
-            )
+            self.dump_label.setText(f"数据库文件不存在：{path}")
             self.dump_label.setStyleSheet(f"color: {palette(self._theme)['danger']};")
             self.backup_button.setEnabled(False)
 
@@ -178,12 +181,11 @@ class DataPage(BasePage):
         self.data_changed.emit()
 
     def _backup(self) -> None:
-        executable = backup.find_mysqldump()
-        if not executable:
+        if not db.is_configured:
             show_warning(
                 self,
-                "找不到 mysqldump",
-                "请安装 MySQL 客户端，并把其 bin 目录加入系统 PATH 后重启应用。",
+                "数据库未就绪",
+                "请先在「设置」中选择数据库文件后再备份。",
             )
             return
         directory = QFileDialog.getExistingDirectory(

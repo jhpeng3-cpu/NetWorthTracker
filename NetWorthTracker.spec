@@ -18,12 +18,8 @@ project_dir = Path(SPECPATH)
 hiddenimports = collect_submodules("alembic") + [
     "logging.config",
     "logging.handlers",
-    "pymysql",
-    "pymysql.constants",
-    "cryptography",
     "matplotlib.backends.backend_qtagg",
     "matplotlib.backends.backend_qt",
-    "sqlalchemy.dialects.mysql.pymysql",
 ]
 
 a = Analysis(

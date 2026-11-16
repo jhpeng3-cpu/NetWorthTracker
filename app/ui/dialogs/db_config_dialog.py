@@ -1,23 +1,23 @@
-"""数据库连接配置对话框。"""
+"""SQLite 数据库文件配置对话框。"""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from app.config import AppConfig, DbSettings
+from app.config import AppConfig, DbSettings, default_db_path
 from app.db import engine as db_engine
 from app.db.migrate import run_migrations
 from app.ui.common import primary_button, show_warning
@@ -39,7 +39,7 @@ class DbConfigDialog(QDialog):
         self._saved_candidate: Optional[DbSettings] = None
         self._busy = False
         self.setWindowTitle("数据库设置")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
         self.setModal(True)
         self._build_ui(initial_error)
         self._load_values()
@@ -49,14 +49,14 @@ class DbConfigDialog(QDialog):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(12)
 
-        title = QLabel("连接到 MySQL")
+        title = QLabel("SQLite 数据库文件")
         title.setObjectName("PageTitle")
         title.setStyleSheet("font-size: 18px;")
         layout.addWidget(title)
         subtitle = QLabel(
-            "首次使用需要填写数据库连接信息，保存后会自动建表；数据库不存在时会自动创建。"
+            "首次使用会自动在用户数据目录创建数据库文件，也可以选择已有的 .db 文件。"
             if self.first_run
-            else "修改连接信息并保存后，应用会自动重连并执行数据库迁移。"
+            else "修改数据库文件并保存后，应用会自动重连并执行数据库迁移。"
         )
         subtitle.setObjectName("Muted")
         subtitle.setWordWrap(True)
@@ -66,41 +66,30 @@ class DbConfigDialog(QDialog):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form.setSpacing(8)
 
-        self.host_edit = QLineEdit()
-        self.host_edit.setPlaceholderText("127.0.0.1")
-        self.port_spin = QSpinBox()
-        self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(3306)
-        self.database_edit = QLineEdit()
-        self.database_edit.setPlaceholderText("networth")
-        self.user_edit = QLineEdit()
-        self.user_edit.setPlaceholderText("root")
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.show_password = QCheckBox("显示密码")
-        self.show_password.toggled.connect(self._toggle_password)
+        self.path_edit = QLineEdit()
+        self.path_edit.setPlaceholderText(str(default_db_path()))
 
-        password_row = QWidget()
-        password_layout = QHBoxLayout(password_row)
-        password_layout.setContentsMargins(0, 0, 0, 0)
-        password_layout.setSpacing(8)
-        password_layout.addWidget(self.password_edit, 1)
-        password_layout.addWidget(self.show_password)
+        file_row = QWidget()
+        file_layout = QHBoxLayout(file_row)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(8)
+        file_layout.addWidget(self.path_edit, 1)
+        self.open_button = QPushButton("选择…")
+        self.open_button.clicked.connect(self._browse_existing)
+        self.new_button = QPushButton("新建…")
+        self.new_button.clicked.connect(self._browse_new)
+        file_layout.addWidget(self.open_button)
+        file_layout.addWidget(self.new_button)
 
-        form.addRow("主机 *", self.host_edit)
-        form.addRow("端口 *", self.port_spin)
-        form.addRow("数据库 *", self.database_edit)
-        form.addRow("用户名 *", self.user_edit)
-        form.addRow("密码", password_row)
+        form.addRow("数据库文件 *", file_row)
         layout.addLayout(form)
 
-        risk = QLabel(
-            "提示：密码以可逆混淆方式保存在应用目录的 config.ini 中，并非强加密，"
-            "请确保该文件仅本人可读。"
+        hint = QLabel(
+            "数据库文件不存在时会自动创建；切换文件不会移动原文件中的数据。"
         )
-        risk.setObjectName("Hint")
-        risk.setWordWrap(True)
-        layout.addWidget(risk)
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         if initial_error:
             error_label = QLabel(initial_error)
@@ -127,40 +116,43 @@ class DbConfigDialog(QDialog):
         layout.addLayout(buttons)
 
     def _load_values(self) -> None:
-        settings = self.config.db_settings()
-        self.host_edit.setText(settings.host)
-        self.port_spin.setValue(settings.port)
-        self.database_edit.setText(settings.database)
-        self.user_edit.setText(settings.user)
-        self.password_edit.setText(settings.password)
+        self.path_edit.setText(self.config.db_settings().path)
 
-    def _toggle_password(self, checked: bool) -> None:
-        self.password_edit.setEchoMode(
-            QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+    def _browse_existing(self) -> None:
+        start = self.path_edit.text().strip() or str(default_db_path().parent)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 SQLite 数据库文件", start, "SQLite 数据库 (*.db *.sqlite);;所有文件 (*)"
         )
+        if path:
+            self.path_edit.setText(path)
+
+    def _browse_new(self) -> None:
+        start = self.path_edit.text().strip() or str(default_db_path())
+        path, _ = QFileDialog.getSaveFileName(
+            self, "新建 SQLite 数据库文件", start, "SQLite 数据库 (*.db)"
+        )
+        if path:
+            target = Path(path)
+            if not target.suffix:
+                target = target.with_suffix(".db")
+            self.path_edit.setText(str(target))
 
     def _read_settings(self) -> Optional[DbSettings]:
-        settings = DbSettings(
-            host=self.host_edit.text().strip(),
-            port=self.port_spin.value(),
-            database=self.database_edit.text().strip(),
-            user=self.user_edit.text().strip(),
-            password=self.password_edit.text(),
-        )
-        if not settings.host or not settings.database or not settings.user:
-            show_warning(self, "信息不完整", "请填写主机、数据库名和用户名。")
+        raw = self.path_edit.text().strip()
+        if not raw:
+            show_warning(self, "信息不完整", "请选择 SQLite 数据库文件路径。")
             return None
-        return settings
+        path = Path(raw).expanduser()
+        if not path.suffix:
+            path = path.with_suffix(".db")
+        return DbSettings(path=str(path.resolve()))
 
     def _set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy
         for widget in (
-            self.host_edit,
-            self.port_spin,
-            self.database_edit,
-            self.user_edit,
-            self.password_edit,
-            self.show_password,
+            self.path_edit,
+            self.open_button,
+            self.new_button,
             self.test_button,
             self.cancel_button,
             self.save_button,
@@ -179,7 +171,7 @@ class DbConfigDialog(QDialog):
         settings = self._read_settings()
         if settings is None:
             return
-        self._set_busy(True, "正在测试连接…")
+        self._set_busy(True, "正在测试数据库文件…")
         run_async(
             lambda: db_engine.test_connection(settings),
             self._on_test_success,
@@ -199,7 +191,7 @@ class DbConfigDialog(QDialog):
         if settings is None:
             return
         self._saved_candidate = settings
-        self._set_busy(True, "正在连接并执行数据库迁移…")
+        self._set_busy(True, "正在打开数据库文件并执行数据库迁移…")
 
         def task() -> str:
             summary = db_engine.test_connection(settings)

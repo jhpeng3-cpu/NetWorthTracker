@@ -1,20 +1,15 @@
-"""应用配置：数据库连接与界面偏好，保存在应用目录 config.ini。"""
+"""应用配置：SQLite 数据库文件与界面偏好，保存在应用目录 config.ini。"""
 from __future__ import annotations
 
 import configparser
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from app.utils.secret import deobfuscate, obfuscate
-
 APP_DIR_NAME = "NetWorthTracker"
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 3306
-DEFAULT_DATABASE = "networth"
-DEFAULT_USER = "root"
+DEFAULT_DB_FILENAME = "networth.db"
 
 
 def app_dir() -> Path:
@@ -38,22 +33,30 @@ def config_path() -> Path:
     return app_dir() / "config.ini"
 
 
+def user_data_dir() -> Path:
+    """用户数据目录；Windows 下优先使用 LOCALAPPDATA。"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if base:
+        return Path(base) / APP_DIR_NAME
+    return Path.home() / f".{APP_DIR_NAME.lower()}"
+
+
+def default_db_path() -> Path:
+    return user_data_dir() / DEFAULT_DB_FILENAME
+
+
 @dataclass
 class DbSettings:
-    host: str = DEFAULT_HOST
-    port: int = DEFAULT_PORT
-    database: str = DEFAULT_DATABASE
-    user: str = DEFAULT_USER
-    password: str = ""
+    path: str = field(default_factory=lambda: str(default_db_path()))
+
+    def resolved_path(self) -> Path:
+        return Path(self.path).expanduser()
 
     def is_complete(self) -> bool:
-        return bool(self.host and self.database and self.user and 1 <= self.port <= 65535)
+        return bool(self.path.strip())
 
     def display(self) -> str:
-        return f"{self.host}:{self.port}/{self.database} · {self.user}"
-
-    def masked(self) -> str:
-        return f"{self.host}:{self.port}/{self.database} · {self.user} · 密码 ******"
+        return str(self.resolved_path())
 
 
 class AppConfig:
@@ -80,27 +83,18 @@ class AppConfig:
 
     # ---- 数据库 ----
     def db_settings(self) -> DbSettings:
-        try:
-            port = int(self._get("database", "port", str(DEFAULT_PORT)) or DEFAULT_PORT)
-        except ValueError:
-            port = DEFAULT_PORT
-        return DbSettings(
-            host=self._get("database", "host", DEFAULT_HOST) or DEFAULT_HOST,
-            port=port,
-            database=self._get("database", "database", DEFAULT_DATABASE) or DEFAULT_DATABASE,
-            user=self._get("database", "user", DEFAULT_USER) or DEFAULT_USER,
-            password=deobfuscate(self._get("database", "password", "")),
-        )
+        path = self._get("database", "path", "").strip()
+        return DbSettings(path=path or str(default_db_path()))
 
     def has_database_config(self) -> bool:
-        return self._parser.has_section("database") and bool(self._get("database", "host"))
+        return bool(self._get("database", "path", "").strip())
 
     def save_db_settings(self, settings: DbSettings) -> None:
-        self._set("database", "host", settings.host.strip())
-        self._set("database", "port", str(settings.port))
-        self._set("database", "database", settings.database.strip())
-        self._set("database", "user", settings.user.strip())
-        self._set("database", "password", obfuscate(settings.password))
+        self._set("database", "path", str(settings.resolved_path()))
+        # 清理旧版本遗留的连接项（host/port/database/user/password）
+        for legacy in ("host", "port", "database", "user", "password"):
+            if self._parser.has_option("database", legacy):
+                self._parser.remove_option("database", legacy)
         self.save()
 
     # ---- 界面 ----

@@ -9,6 +9,13 @@ config.ini
 networth.log
 *.log
 
+# 本地数据库文件（SQLite）
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # 打包产物
 build/
 dist/

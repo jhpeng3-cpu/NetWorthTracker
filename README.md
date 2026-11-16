@@ -1,9 +1,9 @@
-# 净资产管理（NetWorthTracker）
+# 财序（NetWorthTracker）
 
 个人资产负债记录与净资产追踪的 Windows 桌面应用。它不是日常消费记账工具，而是通过维护**账户 → 类别子项 → 估值快照**，计算净资产、资产分布、历史趋势与持仓盈亏；支持多币种、自动获取汇率与股票行情。
 
 - Python 3.9+ / PySide6（原生 Qt 窗口）
-- MySQL 8.0+ / SQLAlchemy 2.x / PyMySQL / Alembic
+- SQLite（单文件，Python 内置）/ SQLAlchemy 2.x / Alembic
 - 图表：matplotlib（嵌入 Qt）
 - 金额：`Decimal`，数据库 `NUMERIC(18,2)`
 - 支持币种：人民币（CNY）、美元（USD）、日元（JPY）、澳门元（MOP）、港币（HKD）
@@ -21,7 +21,7 @@ NetWorthTracker/
 ├─ alembic/
 │  ├─ env.py
 │  ├─ script.py.mako
-│  └─ versions/               # 0001 初始 → 0006 行情
+│  └─ versions/               # 0001 初始（SQLite 完整表结构）
 ├─ NetWorthTracker.spec       # PyInstaller 打包配置
 ├─ app/
 │  ├─ config.py               # config.ini 读写、应用/资源目录
@@ -38,7 +38,7 @@ NetWorthTracker/
 │  │  ├─ quotes.py            # 股票行情拉取、代码归一化、自动写入快照
 │  │  ├─ profit.py            # 成本批次、市值/盈亏、区间盈亏
 │  │  ├─ csv_io.py            # CSV 导入导出与校验
-│  │  └─ backup.py            # mysqldump 备份
+│  │  └─ backup.py            # SQLite 在线备份
 │  ├─ ui/
 │  │  ├─ styles.py            # 浅色/深色 QSS 与图表配色
 │  │  ├─ common.py            # 卡片、表格、消息框等
@@ -50,20 +50,15 @@ NetWorthTracker/
 └─ README.md
 ```
 
-## 二、数据库准备
+## 二、数据库
 
-1. 安装 MySQL 8.0+（8.0.16 起才真正校验 `CHECK` 约束），确保服务已启动。
-2. 数据库可由应用自动创建：首次「测试连接 / 保存并连接」时会以 `utf8mb4` 创建；若账号没有 `CREATE` 权限，请手动创建：
+应用使用 **SQLite**，无需安装数据库服务：
 
-```sql
-CREATE DATABASE networth
-  CHARACTER SET utf8mb4
-  COLLATE utf8mb4_unicode_ci;
-```
-
-3. 如需远程连接，确认 MySQL 账号允许该主机访问（如 `'root'@'%'`），并在防火墙放行 3306 端口。
-4. MySQL 8 默认使用 `caching_sha2_password`，`requirements.txt` 已包含 `cryptography` 以完成认证。
-5. 应用只管理自身业务表，不会修改或删除其它数据库。
+- 默认数据库文件：`%LOCALAPPDATA%\NetWorthTracker\networth.db`。
+- 首次启动会自动创建文件并执行 Alembic 迁移，无需配置账号密码。
+- 可在「设置 → 数据库文件」中更换为其它 `.db` 文件；文件不存在时会自动创建。
+- 若 `LOCALAPPDATA` 不可用，则回退到用户主目录下的 `.networthtracker/networth.db`。
+- 应用只管理自身业务表，不会修改或删除其它文件。
 
 ## 三、安装与运行
 
@@ -83,14 +78,14 @@ python main.py
 python dev_run.py
 ```
 
-首次启动会弹出数据库配置窗口：填写 host、port、database、user、password，点击「测试连接」，再点击「保存并连接」。应用会自动执行 Alembic 迁移；数据库不存在时会自动创建（utf8mb4）。
+首次启动会自动在用户数据目录创建 SQLite 数据库并执行 Alembic 迁移，无需填写连接信息。如需使用其它数据库文件，可在「设置 → 数据库文件」中切换（支持选择已有 `.db` 或新建）。
 
 配置保存在**应用目录**的 `config.ini`：
 
 - 源码运行：项目根目录
 - 打包运行：`NetWorthTracker.exe` 所在目录
 
-密码使用可逆混淆（`obf:` 前缀）保存，仅防止直接肉眼查看，并非强加密；请限制该文件的访问权限。
+`config.ini` 的 `[database]` 段仅保存数据库文件路径（`path`），不包含账号密码。
 
 ### Alembic 命令行（可选）
 
@@ -147,7 +142,7 @@ alembic downgrade base
 
 | 模块 | 操作 | 验证 |
 |---|---|---|
-| 首次配置 | 首次启动填写数据库 | 连接成功、自动建库建表，重启后不再弹窗 |
+| 首次配置 | 首次启动自动创建数据库文件 | 自动建库建表，无需填写连接信息 |
 | 账户管理 | 新增资产/负债账户，一个账户可含多个类别子项 | 主从布局；同名报错；归档/删除需确认并级联 |
 | 子项管理 | 子项名称、币种、类别、股票代码 | 仅「股票」显示代码；多币种各自折算 |
 | 估值录入 | 选中子项录入，或账户内批量录入 | 同日重复提示覆盖；即时刷新各页面 |
@@ -158,8 +153,8 @@ alembic downgrade base
 | 历史明细 | 按账户和日期筛选，编辑/删除 | 修改后图表同步；日期冲突有提示 |
 | 变化拆解 | 选期初/期末日期点「对比」 | 显示两期总资产/负债/净资产与按子项变化额 |
 | CSV | 导出账户/快照；导入快照 | Excel 正常打开（BOM）；导入前预览、校验、重复策略 |
-| 备份 | 「数据管理 → 立即备份」 | 生成 `.sql`；PATH 无 `mysqldump` 时给出提示 |
-| 持久化 | 关闭应用再启动 | 数据仍在（MySQL） |
+| 备份 | 「数据管理 → 立即备份」 | 生成 `.db` 副本文件 |
+| 持久化 | 关闭应用再启动 | 数据仍在（SQLite 文件） |
 
 ### 演示数据
 
@@ -189,25 +184,13 @@ account_name,item_name,snapshot_date,value,note
 
 ## 七、备份与恢复
 
-手动备份调用：
+「数据管理 → 立即备份」会调用 SQLite 在线备份接口，把当前数据库复制为独立的 `.db` 文件（默认命名为 `networth_backup_YYYYMMDD_HHMMSS.db`），无需额外安装任何客户端。
 
-```text
-mysqldump --single-transaction --quick --set-gtid-purged=OFF ...
-```
+恢复方式：
 
-需要 `mysqldump` 在 PATH 中，通常位于：
-
-```text
-C:\Program Files\MySQL\MySQL Server 8.0\bin
-```
-
-恢复示例（PowerShell 不支持 `<` 重定向，因此用 `cmd /c`）：
-
-```powershell
-$env:MYSQL_PWD="你的密码"
-mysql -h 127.0.0.1 -u root -e "CREATE DATABASE IF NOT EXISTS networth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-cmd /c 'mysql -h 127.0.0.1 -u root networth < networth_backup_YYYYMMDD_HHMMSS.sql'
-```
+1. 关闭应用。
+2. 用备份文件覆盖当前数据库文件（默认位于 `%LOCALAPPDATA%\NetWorthTracker\networth.db`），或在「设置 → 数据库文件」中直接切换到备份文件。
+3. 重新启动应用。
 
 「设置」中可开启启动时自动备份，并指定目录。自动备份失败只在状态栏提示，不阻塞启动。
 
@@ -228,21 +211,20 @@ dist\NetWorthTracker\NetWorthTracker.exe
 分发与运行说明：
 
 - 必须复制整个 `dist\NetWorthTracker` 目录，不能只拷 exe。
-- 目标机需 64 位 Windows，能连接 MySQL（本机或远程）；程序不捆绑 MySQL。
+- 目标机需 64 位 Windows；数据库为本地 SQLite 文件，无需安装数据库服务。
 - 放到可写目录（如 `D:\Apps\NetWorthTracker`），不要放 `Program Files`，因为 `config.ini`、`networth.log` 写在 exe 同目录。
-- 首次运行按提示配置数据库，表结构自动创建；需要联网才能获取汇率与股票行情。
+- 首次运行自动创建数据库文件与表结构；需要联网才能获取汇率与股票行情。
 - 未签名 exe 首次运行可能被 SmartScreen 拦截，选择「更多信息 → 仍要运行」。
-- 需要迁移现有数据时，用 `mysqldump` 导出源库、在目标机导入后连接同名数据库。
+- 迁移数据时直接复制 SQLite `.db` 文件即可（默认位于 `%LOCALAPPDATA%\NetWorthTracker\networth.db`）。
 - `alembic/`、`alembic.ini` 与界面资源通过 spec 的 `datas` 打包；`hiddenimports` 含 `logging.config` 等动态依赖。
-- 备份功能依赖目标机器安装 MySQL 客户端并把 `bin` 加入 PATH。
 
 ## 九、常见问题
 
 **启动即退出 / 无窗口**：查看应用目录下的 `startup_error.log`（启动失败详情）与 `networth.log`（运行日志）。
 
-**密码认证失败**：检查 MySQL 用户名/密码；远程连接需账号具备对应主机的访问授权（`host` 字段）。
+**数据库文件无法打开**：检查文件路径所在目录是否存在、是否有写入权限；文件被其它程序占用时请关闭后重试。
 
-**数据库不存在**：应用会尝试自动创建；若账号无 `CREATE` 权限，请先手动创建数据库。
+**数据库文件损坏或不是 SQLite**：换回备份文件，或在「设置 → 数据库文件」中选择有效的 `.db` 文件。
 
 **汇率或行情拉取失败**：检查网络与防火墙；失败不影响已有数据，保留上次缓存，可稍后点「刷新」重试。
 
@@ -250,9 +232,7 @@ dist\NetWorthTracker\NetWorthTracker.exe
 
 **中文图表乱码**：代码已设置微软雅黑/黑体；如系统缺少字体，可安装或修改 `app/ui/widgets/charts.py` 中的 `font.sans-serif`。
 
-**备份提示找不到 mysqldump**：把 MySQL 的 `bin` 目录加入系统 PATH，重启应用。
-
-**应用启动后无数据**：确认当前数据库是否正确；可在「设置 → 数据库连接」查看连接信息（密码隐藏）。
+**应用启动后无数据**：确认「设置 → 数据库文件」指向的是正确的 `.db` 文件。
 
 ## 十、实现约定
 

@@ -6,7 +6,6 @@ from decimal import Decimal
 from typing import List, Optional
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -66,7 +65,7 @@ class Base(DeclarativeBase):
 class Account(Base):
     __tablename__ = "accounts"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), nullable=False, server_default=text("'CNY'"))
@@ -90,11 +89,6 @@ class Account(Base):
     __table_args__ = (
         UniqueConstraint("name", name="uq_accounts_name"),
         CheckConstraint("side IN ('asset', 'liability')", name="ck_accounts_side"),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
 
 
@@ -103,9 +97,9 @@ class AccountItem(Base):
 
     __tablename__ = "account_items"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[int] = mapped_column(
-        BigInteger,
+        Integer,
         ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -146,25 +140,20 @@ class AccountItem(Base):
             "interest_rate IS NULL OR (interest_rate >= 0 AND interest_rate <= 100)",
             name="ck_item_interest_rate",
         ),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
 
 
 class ValuationSnapshot(Base):
     __tablename__ = "valuation_snapshots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[int] = mapped_column(
-        BigInteger,
+        Integer,
         ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
     item_id: Mapped[int] = mapped_column(
-        BigInteger,
+        Integer,
         ForeignKey("account_items.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -182,11 +171,6 @@ class ValuationSnapshot(Base):
         UniqueConstraint("item_id", "snapshot_date", name="uq_snapshot_item_date"),
         CheckConstraint("value >= 0", name="ck_snapshot_value_nonnegative"),
         Index("ix_valuation_snapshots_snapshot_date", "snapshot_date"),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
 
 
@@ -195,7 +179,7 @@ class ExchangeRate(Base):
 
     __tablename__ = "exchange_rates"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     currency_code: Mapped[str] = mapped_column(String(10), nullable=False)
     rate_date: Mapped[date] = mapped_column(nullable=False)
     rate: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
@@ -214,11 +198,6 @@ class ExchangeRate(Base):
         UniqueConstraint("currency_code", "rate_date", name="uq_rate_code_date"),
         CheckConstraint("rate > 0", name="ck_rate_positive"),
         Index("ix_exchange_rates_rate_date", "rate_date"),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
 
 
@@ -227,7 +206,7 @@ class PriceQuote(Base):
 
     __tablename__ = "price_quotes"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     market: Mapped[str] = mapped_column(String(8), nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(64))
@@ -247,11 +226,6 @@ class PriceQuote(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "market", name="uq_quote_symbol_market"),
         CheckConstraint("price >= 0", name="ck_quote_price_nonnegative"),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
 
 
@@ -260,9 +234,9 @@ class PositionLot(Base):
 
     __tablename__ = "position_lots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     item_id: Mapped[int] = mapped_column(
-        BigInteger,
+        Integer,
         ForeignKey("account_items.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -291,9 +265,4 @@ class PositionLot(Base):
         CheckConstraint("unit_cost >= 0", name="ck_lot_unit_cost_nonnegative"),
         CheckConstraint("fee >= 0", name="ck_lot_fee_nonnegative"),
         Index("ix_position_lots_item_date", "item_id", "trade_date"),
-        {
-            "mysql_engine": "InnoDB",
-            "mysql_charset": "utf8mb4",
-            "mysql_collate": "utf8mb4_unicode_ci",
-        },
     )
